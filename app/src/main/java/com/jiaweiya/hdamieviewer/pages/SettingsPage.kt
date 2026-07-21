@@ -123,6 +123,8 @@ fun SettingsPage(
     onNavigateToExportBackup: () -> Unit,
     onImportBackupClick: () -> Unit,
     onNavigateToAbout: () -> Unit,
+    playerType: Int,
+    onPlayerTypeChange: (Int) -> Unit,
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -133,6 +135,7 @@ fun SettingsPage(
     var showChannelDialog by remember { mutableStateOf(false) }
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showAppIconDialog by remember { mutableStateOf(false) }
+    var showPlayerDialog by remember { mutableStateOf(false) }
 
     var cacheSizeStr by remember { mutableStateOf("计算中...") }
 
@@ -205,7 +208,6 @@ fun SettingsPage(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
                     )
-
 
                     Row(
                         modifier = Modifier
@@ -280,6 +282,31 @@ fun SettingsPage(
 
                     // 应用图标切换配置栏
                     AppIconSettingsRow(onOpenDialog = { showAppIconDialog = true })
+
+                    // 播放器选择 Row（已正确移动到第一分区内部，不再直接暴露在 LazyColumn 作用域中）
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showPlayerDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("播放器选择", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val playerNames = listOf("ExoPlayer (默认)", "MpvPlayer (极简)", "MediaPlayer (系统)")
+                            Icon(
+                                imageVector = Icons.Default.Slideshow,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(playerNames[playerType], fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
 
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
@@ -428,6 +455,18 @@ fun SettingsPage(
             item {
                 Spacer(modifier = Modifier.height(120.dp))
             }
+        }
+
+        // 弹窗已安全移至外层
+        if (showPlayerDialog) {
+            PlayerSelectionDialog(
+                currentPlayer = playerType,
+                onDismiss = { showPlayerDialog = false },
+                onSave = { newPlayer ->
+                    onPlayerTypeChange(newPlayer)
+                    showPlayerDialog = false
+                }
+            )
         }
     }
 
@@ -1100,6 +1139,118 @@ fun ScrollFadeIn(content: @Composable () -> Unit) {
             content()
         }
     }
+}
+
+@Composable
+fun PlayerSelectionDialog(
+    currentPlayer: Int,
+    onDismiss: () -> Unit,
+    onSave: (Int) -> Unit
+) {
+    var selectedPlayer by remember { mutableIntStateOf(currentPlayer) }
+    val itemBoundsInRoot = remember { mutableStateMapOf<Int, Rect>() }
+    var boxBoundsInRoot by remember { mutableStateOf(Rect.Zero) }
+    val density = LocalDensity.current
+
+    val playerOptions = listOf(
+        Triple("ExoPlayer (系统默认)", Icons.Default.PlayCircle, 0),
+        Triple("MpvPlayer (极简美化)", Icons.Default.Slideshow, 1),
+        Triple("MediaPlayer (系统原生)", Icons.Default.Tv, 2)
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择默认播放器", fontWeight = FontWeight.Bold) },
+        text = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+                    .onGloballyPositioned { coords -> boxBoundsInRoot = coords.boundsInRoot() }
+            ) {
+                val targetItemRoot = itemBoundsInRoot[selectedPlayer] ?: Rect.Zero
+                val targetRelative = if (targetItemRoot != Rect.Zero && boxBoundsInRoot != Rect.Zero) {
+                    targetItemRoot.translate(-boxBoundsInRoot.left, -boxBoundsInRoot.top)
+                } else Rect.Zero
+
+                if (targetRelative != Rect.Zero) {
+                    val animSpec = spring<Float>(dampingRatio = 0.65f, stiffness = 400f)
+                    val animLeft by animateFloatAsState(targetRelative.left, animSpec, label = "X")
+                    val animTop by animateFloatAsState(targetRelative.top, animSpec, label = "Y")
+                    val animWidth by animateFloatAsState(targetRelative.width, animSpec, label = "W")
+                    val animHeight by animateFloatAsState(targetRelative.height, animSpec, label = "H")
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset { IntOffset(animLeft.roundToInt(), animTop.roundToInt()) }
+                            .size(with(density) { animWidth.toDp() }, with(density) { animHeight.toDp() })
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    playerOptions.forEach { (title, icon, index) ->
+                        val isSelected = selectedPlayer == index
+                        val itemBgColor by animateColorAsState(
+                            targetValue = if (isSelected) Color.Transparent
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                            animationSpec = tween(300),
+                            label = "itemBgAnim"
+                        )
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .onGloballyPositioned { coords -> itemBoundsInRoot[index] = coords.boundsInRoot() }
+                                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                    selectedPlayer = index
+                                }
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(itemBgColor),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = title,
+                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = title,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val hasChanged = selectedPlayer != currentPlayer
+            Button(
+                onClick = { onSave(selectedPlayer) },
+                enabled = hasChanged,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(text = "保存并应用")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    )
 }
 
 private fun getFolderSize(file: java.io.File?): Long {

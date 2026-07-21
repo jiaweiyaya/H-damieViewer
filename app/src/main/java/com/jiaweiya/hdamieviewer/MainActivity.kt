@@ -165,6 +165,8 @@ class MainActivity : ComponentActivity() {
             val defaultColor = if (isAppDark) 0xFFD0BCFFL else 0xFF9E77EDL
             var themeColor by remember { mutableStateOf(sharedPrefs.getLong("theme_color", defaultColor)) }
             var autoCheckUpdate by remember { mutableStateOf(sharedPrefs.getBoolean("auto_check_update", true)) }
+            // 默认：0-ExoPlayer, 1-MpvPlayer, 2-MediaPlayer
+            var playerType by remember { mutableStateOf(sharedPrefs.getInt("player_type", 0)) }
 
             // 监听并实时存储状态
             LaunchedEffect(themeMode, themeColor, updateChannel, autoCheckUpdate) {
@@ -174,6 +176,7 @@ class MainActivity : ComponentActivity() {
                         .putLong("theme_color", themeColor)
                         .putInt("update_channel", updateChannel)
                         .putBoolean("auto_check_update", autoCheckUpdate)
+                        .putInt("player_type", playerType)
                         .apply()
                 }
             }
@@ -339,7 +342,9 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToExportBackup = { navController.navigate("ExportBackup") },
                                     onImportBackupClick = { importDocLauncher.launch(arrayOf("*/*")) },
                                     onNavigateToAbout = { navController.navigate("About") },
-                                    onBackClick = { navController.popBackStack() }
+                                    onBackClick = { navController.popBackStack() },
+                                    playerType = playerType,
+                                    onPlayerTypeChange = { playerType = it }
                                 )
                             }
 

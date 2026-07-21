@@ -154,6 +154,10 @@ fun VideoPlayerScreen(
     var videoDetail by remember { mutableStateOf<IwaraVideoDetail?>(null) }
     var videoUrl by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
+    val context = LocalContext.current
+
+    val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
+    val playerType = remember { sharedPrefs.getInt("player_type", 0) }
 
     var debugLog by remember { mutableStateOf("") }
     var showDebugDialog by remember { mutableStateOf(false) }
@@ -256,21 +260,15 @@ fun VideoPlayerScreen(
                         .background(Color.Black)
                 ) {
                     if (!videoUrl.isNullOrEmpty()) {
-                        // 渲染原生的 ExoPlayer 播放器
-                        VideoPlayer(
-                            videoUrl = videoUrl!!,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        // 根据选择的播放器类型进行渲染
+                        when (playerType) {
+                            1 -> MpvMinimalPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize()) // 极简美化版
+                            2 -> NativeMediaPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize()) // 系统原生版
+                            else -> VideoPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize()) // ExoPlayer 默认版
+                        }
                     } else {
-                        // 备用缓冲视图
                         Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(Color.DarkGray, Color.Black)
-                                    )
-                                ),
+                            modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
                             CircularProgressIndicator(color = Color.White)
@@ -602,6 +600,111 @@ fun TagsSection(tags: List<String>, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+// ==================== 播放器扩展内核 ====================
+
+// MpvPlayer (极简美化版)：关闭 ExoPlayer 原生庞大的控制器，纯靠 Compose 绘制不占任何空间的底部超薄进度线与手势暂停
+@OptIn(UnstableApi::class)
+@Composable
+fun MpvMinimalPlayer(videoUrl: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+
+    val exoPlayer = remember(videoUrl) {
+        ExoPlayer.Builder(context).build().apply {
+            val mediaItem = MediaItem.fromUri(videoUrl)
+            setMediaItem(mediaItem)
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    // 播放进度及暂停状态实时监测
+    var currentPosition by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(0L) }
+    var isPlaying by remember { mutableStateOf(true) }
+
+    LaunchedEffect(exoPlayer) {
+        while (true) {
+            currentPosition = exoPlayer.currentPosition
+            duration = exoPlayer.duration.coerceAtLeast(0L)
+            isPlaying = exoPlayer.isPlaying
+            kotlinx.coroutines.delay(250) // 每 250 毫秒刷新一次极细进度线
+        }
+    }
+
+    DisposableEffect(exoPlayer) {
+        onDispose { exoPlayer.release() }
+    }
+
+    Box(
+        modifier = modifier.clickable {
+            // 点击整个画面直接控制 暂停 / 播放，无需任何按钮占用空间
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+            } else {
+                exoPlayer.play()
+            }
+            isPlaying = exoPlayer.isPlaying
+        }
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = false // 完全关闭原生臃肿控制器
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 仅在暂停时才在中心呈现一个轻微半透明的播放指示，播放时全屏无任何内容遮挡，纯净美观
+        if (!isPlaying) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.25f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "暂停",
+                    tint = Color.White,
+                    modifier = Modifier.size(56.dp)
+                )
+            }
+        }
+
+        // 底部极细、完全不占空间的主题色进度条指示
+        if (duration > 0f) {
+            LinearProgressIndicator(
+                progress = { currentPosition.toFloat() / duration.toFloat() },
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = Color.White.copy(alpha = 0.2f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp) // 极细设计
+                    .align(Alignment.BottomCenter)
+            )
+        }
+    }
+}
+
+// MediaPlayer (系统原生 VideoView 版)：极轻，没有任何外部第三方播放器依赖
+@Composable
+fun NativeMediaPlayer(videoUrl: String, modifier: Modifier = Modifier) {
+    AndroidView(
+        factory = { ctx ->
+            android.widget.VideoView(ctx).apply {
+                setVideoPath(videoUrl)
+                val controller = android.widget.MediaController(ctx)
+                controller.setAnchorView(this)
+                setMediaController(controller) // 绑定最基础的原生 MediaController 条
+                start() // 自动开始播放
+            }
+        },
+        modifier = modifier
+    )
 }
 
 // 获取直链 API 接口的原生响应报文
