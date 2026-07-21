@@ -1,461 +1,458 @@
-// File: app/src/main/java/com/jiaweiya/hdamieviewer/MainActivity.kt
 package com.jiaweiya.hdamieviewer
 
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ScrollState
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.jiaweiya.hdamieviewer.pages.AboutPage
+import com.jiaweiya.hdamieviewer.pages.BackupCrypto
+import com.jiaweiya.hdamieviewer.pages.BackupData
+import com.jiaweiya.hdamieviewer.pages.ExportBackupScreen
+import com.jiaweiya.hdamieviewer.pages.HomeScreen
+import com.jiaweiya.hdamieviewer.pages.ImportBackupScreen
+import com.jiaweiya.hdamieviewer.pages.MainDrawerSheet
+import com.jiaweiya.hdamieviewer.pages.SettingsPage
 import com.jiaweiya.hdamieviewer.ui.theme.HDAmieViewerTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import java.time.LocalDate
+import androidx.compose.ui.unit.sp
+import com.jiaweiya.hdamieviewer.pages.resolveThemeColor
+
+data class GithubRelease(
+    val tag_name: String,
+    val body: String,
+    val html_url: String
+)
+
+suspend fun checkAppUpdate(
+    currentVersion: String,
+    channel: Int,
+    onResult: (release: GithubRelease?, isLatest: Boolean, errorMsg: String?) -> Unit // 增加 errorMsg 参数
+) {
+    withContext(Dispatchers.IO) {
+        try {
+            val urlString = if (channel == 1) {
+                "https://api.github.com/repos/jiaweiyaya/H-damieViewer/releases"
+            } else {
+                "https://api.github.com/repos/jiaweiyaya/H-damieViewer/releases/latest"
+            }
+
+            val url = URL(urlString)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+
+            val responseCode = connection.responseCode
+            if (responseCode == 200) {
+                val json = connection.inputStream.bufferedReader().readText()
+                val gson = Gson()
+
+                val release = if (channel == 1) {
+                    val type = object : TypeToken<List<GithubRelease>>() {}.type
+                    val releases = gson.fromJson<List<GithubRelease>>(json, type)
+                    releases.firstOrNull()
+                } else {
+                    gson.fromJson(json, GithubRelease::class.java)
+                }
+
+                if (release != null) {
+                    val remoteVersion = release.tag_name.replace(Regex("[^0-9.]"), "")
+                    val localVersion = currentVersion.replace(Regex("[^0-9.]"), "")
+
+                    fun toInts(v: String) = v.split(".").map { it.toIntOrNull() ?: 0 }
+                    val remoteParts = toInts(remoteVersion)
+                    val localParts = toInts(localVersion)
+
+                    var isNewer = false
+                    for (i in 0 until maxOf(remoteParts.size, localParts.size)) {
+                        val r = remoteParts.getOrNull(i) ?: 0
+                        val l = localParts.getOrNull(i) ?: 0
+                        if (r > l) { isNewer = true; break }
+                        if (r < l) { break }
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        // 成功时 errorMsg 传 null
+                        if (isNewer) onResult(release, false, null) else onResult(null, true, null)
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        onResult(null, false, "GitHub 响应数据解析为空")
+                    }
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    // 捕捉 HTTP 非 200 错误（例如 403 频率受限，404 库不存在等）
+                    onResult(null, false, "HTTP 错误代码: $responseCode (${connection.responseMessage})")
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            withContext(Dispatchers.Main) {
+                // 捕捉物理连接异常（例如超时、断网、域名无解析等）
+                onResult(null, false, "网络连接异常: ${e.localizedMessage ?: e.message ?: "未知错误"}")
+            }
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val sharedPrefs = getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE)
+
         setContent {
-            HDAmieViewerTheme {
+            // 本地偏好设置状态加载
+            var themeMode by remember { mutableStateOf(sharedPrefs.getInt("theme_mode", 0)) }
+            var updateChannel by remember { mutableStateOf(sharedPrefs.getInt("update_channel", 0)) }
+            val isSystemDark = isSystemInDarkTheme()
+            val isAppDark = themeMode == 2 || (themeMode == 0 && isSystemDark)
+            val defaultColor = if (isAppDark) 0xFFD0BCFFL else 0xFF9E77EDL
+            var themeColor by remember { mutableStateOf(sharedPrefs.getLong("theme_color", defaultColor)) }
+            var autoCheckUpdate by remember { mutableStateOf(sharedPrefs.getBoolean("auto_check_update", true)) }
+
+            // 监听并实时存储状态
+            LaunchedEffect(themeMode, themeColor, updateChannel, autoCheckUpdate) {
+                withContext(Dispatchers.IO) {
+                    sharedPrefs.edit()
+                        .putInt("theme_mode", themeMode)
+                        .putLong("theme_color", themeColor)
+                        .putInt("update_channel", updateChannel)
+                        .putBoolean("auto_check_update", autoCheckUpdate)
+                        .apply()
+                }
+            }
+
+            val resolvedThemeColor = resolveThemeColor(themeColor, isAppDark)
+
+            // 【核心修复】：显式将 resolvedThemeColor 传递给 HDAmieViewerTheme
+            HDAmieViewerTheme(darkTheme = isAppDark, themeColor = resolvedThemeColor) {
+                val navController = rememberNavController()
                 val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
+
+                val currentAppVersion = remember {
+                    try {
+                        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
+                    } catch (e: Exception) {
+                        "1.0.0"
+                    }
+                }
+
+                var timetables by remember { mutableStateOf<List<TimetableData>>(emptyList()) }
+                var timeProfiles by remember { mutableStateOf<List<TimeProfile>>(emptyList()) }
+                var pendingBackupToImport by remember { mutableStateOf<BackupData?>(null) }
+                var pendingBackupToVerify by remember { mutableStateOf<BackupData?>(null) }
+                var updateInfo by remember { mutableStateOf<GithubRelease?>(null) }
+
+                // 每天首次自动更新逻辑
+                LaunchedEffect(Unit) {
+                    if (autoCheckUpdate) {
+                        val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+                        val lastCheckDate = sharedPrefs.getString("last_update_check_date", "")
+                        if (lastCheckDate != todayStr) {
+                            checkAppUpdate(currentAppVersion, updateChannel) { release, _, errorMsg ->
+                                if (release != null) {
+                                    updateInfo = release
+                                } else if (errorMsg != null) {
+                                    // 静默检查在后台输出 Log 以便调试，不弹 Toast 打扰用户
+                                    android.util.Log.e("AppUpdate", "自动静默检测失败: $errorMsg")
+                                }
+                            }
+                            sharedPrefs.edit().putString("last_update_check_date", todayStr).apply()
+                        }
+                    }
+                }
+
+                val importDocLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri: Uri? ->
+                    if (uri != null) {
+                        coroutineScope.launch {
+                            try {
+                                val encryptedText = withContext(Dispatchers.IO) {
+                                    context.contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }
+                                }
+                                if (encryptedText != null) {
+                                    val decryptedText = BackupCrypto.decrypt(encryptedText)
+                                    val backupData = Gson().fromJson(decryptedText, BackupData::class.java)
+
+                                    if (backupData.appVersion != currentAppVersion) {
+                                        pendingBackupToVerify = backupData
+                                    } else {
+                                        pendingBackupToImport = backupData
+                                        navController.navigate("ImportBackup")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                Toast.makeText(context, "解析备份失败", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+
+                BackHandler(enabled = drawerState.isOpen) {
+                    coroutineScope.launch { drawerState.close() }
+                }
+
+                val blurRadius by animateDpAsState(
+                    targetValue = if (drawerState.targetValue == DrawerValue.Open) 16.dp else 0.dp,
+                    label = "drawer_blur"
+                )
 
                 ModalNavigationDrawer(
                     drawerState = drawerState,
                     drawerContent = {
                         MainDrawerSheet(
                             onCloseDrawer = { coroutineScope.launch { drawerState.close() } },
-                            onNavigateToSettings = {
-                                Toast.makeText(context, "跳转至应用设置", Toast.LENGTH_SHORT).show()
-                            },
-                            onNavigateToAbout = {
-                                Toast.makeText(context, "跳转至关于此应用", Toast.LENGTH_SHORT).show()
+                            onNavigateToSettings = { navController.navigate("Settings") },
+                            onNavigateToAbout = { navController.navigate("About") },
+                            onCheckUpdate = {
+                                Toast.makeText(context, "正在检查更新...", Toast.LENGTH_SHORT).show()
+                                coroutineScope.launch {
+                                    val sharedPrefs = context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE)
+                                    val updateChannel = sharedPrefs.getInt("update_channel", 0)
+
+                                    checkAppUpdate(currentVersion = currentAppVersion, channel = updateChannel) { release, isLatest, errorMsg ->
+                                        if (release != null) {
+                                            updateInfo = release
+                                        } else if (isLatest) {
+                                            Toast.makeText(context, "当前已是最新版本", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            // 显示具体的 HTTP 状态码或连接报错
+                                            Toast.makeText(context, "检查更新失败\n原因: $errorMsg", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
                             }
                         )
                     }
                 ) {
-                    HomeScreen(
-                        onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
-                        onNavigateToSettings = {
-                            Toast.makeText(context, "打开应用设置", Toast.LENGTH_SHORT).show()
-                        },
-                        onNavigateToAbout = {
-                            Toast.makeText(context, "打开关于此应用", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ==================== 主页面组件 ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun HomeScreen(
-    onOpenDrawer: () -> Unit,
-    onNavigateToSettings: () -> Unit,
-    onNavigateToAbout: () -> Unit
-) {
-    val scrollState = rememberScrollState()
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("i站客户端 (HDAmieViewer)", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onOpenDrawer) {
-                        Icon(imageVector = Icons.Default.Menu, contentDescription = "菜单")
-                    }
-                }
-            )
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            // 主页滑动内容区域
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // 1. 搜索框
-                SearchBar()
-
-                // 2. 精选大卡片 (16:9)
-                FeaturedCard()
-
-                // 3. 视频区域 (2行2列)
-                MediaGridSection(title = "推荐视频", isVideo = true)
-
-                // 4. 图片区域 (2行2列)
-                MediaGridSection(title = "精选图片", isVideo = false)
-
-                Spacer(modifier = Modifier.height(32.dp))
-            }
-
-            // 5. 右侧物理滚动条
-            VerticalScrollbar(scrollState = scrollState)
-        }
-    }
-}
-
-// 搜索框组件
-@Composable
-fun SearchBar(modifier: Modifier = Modifier) {
-    var searchText by remember { mutableStateOf("") }
-    OutlinedTextField(
-        value = searchText,
-        onValueChange = { searchText = it },
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        placeholder = { Text("搜索你感兴趣的作品...") },
-        leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = "搜索") },
-        singleLine = true,
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-        )
-    )
-}
-
-// 精选大卡片组件 (16:9)
-@Composable
-fun FeaturedCard(modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            // 随便填充一张渐变占位图
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(Color(0xFF3F51B5), Color(0xFF00BCD4))
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.PlayCircle,
-                    contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.8f),
-                    modifier = Modifier.size(56.dp)
-                )
-            }
-
-            // 下1/3区域渐变加深并展示标题
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.35f)
-                    .align(Alignment.BottomStart)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
-                        )
-                    )
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                contentAlignment = Alignment.BottomStart
-            ) {
-                Text(
-                    text = "【精选置顶】这是一篇测试用的大卡片标题内容展示",
-                    color = Color.White,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-// 媒体分栏区域组件 (包含 2行2列 的视频/图片卡片)
-@Composable
-fun MediaGridSection(title: String, isVideo: Boolean, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            text = title,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(bottom = 12.dp)
-        )
-
-        // 2行布局
-        for (row in 0 until 2) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // 2列布局
-                for (col in 0 until 2) {
-                    val itemIndex = row * 2 + col + 1
-                    MediaItemCard(
-                        title = "测试样例 - 这是一个很长很长用来展示两行折行以及省略号效果的标题标题 #$itemIndex",
-                        isVideo = isVideo,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-// 单个媒体项卡片 (16:9比例封面 + 最多2行字标题)
-@Composable
-fun MediaItemCard(title: String, isVideo: Boolean, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            colors = if (isVideo) {
-                                listOf(Color(0xFFE91E63), Color(0xFFFF9800))
-                            } else {
-                                listOf(Color(0xFF009688), Color(0xFF4CAF50))
-                            }
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                // 随便填充一个矢量图标代表内容类型
-                Icon(
-                    imageVector = if (isVideo) Icons.Default.PlayCircle else Icons.Default.Info,
-                    contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = title,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            lineHeight = 16.sp,
-            modifier = Modifier.padding(horizontal = 2.dp)
-        )
-    }
-}
-
-// 自定义滚动条组件 (计算滚动进度并在右侧渲染指示条)
-@Composable
-fun BoxScope.VerticalScrollbar(
-    scrollState: ScrollState,
-    modifier: Modifier = Modifier
-) {
-    val density = LocalDensity.current
-    Canvas(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(4.dp)
-            .align(Alignment.CenterEnd)
-    ) {
-        val totalHeight = size.height
-        val maxValue = scrollState.maxValue.toFloat()
-        if (maxValue > 0f) {
-            val value = scrollState.value.toFloat()
-            val viewportHeight = totalHeight
-            val contentHeight = maxValue + viewportHeight
-            val thumbHeight = (viewportHeight / contentHeight) * totalHeight
-            val thumbTop = (value / maxValue) * (totalHeight - thumbHeight)
-
-            drawRoundRect(
-                color = Color.Gray.copy(alpha = 0.5f),
-                topLeft = androidx.compose.ui.geometry.Offset(size.width - 4.dp.toPx(), thumbTop),
-                size = androidx.compose.ui.geometry.Size(4.dp.toPx(), thumbHeight),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
-            )
-        }
-    }
-}
-
-// ==================== 侧边栏组件 ====================
-
-@Composable
-fun MainDrawerSheet(
-    onCloseDrawer: () -> Unit,
-    onNavigateToSettings: () -> Unit,
-    onNavigateToAbout: () -> Unit
-) {
-    ModalDrawerSheet(
-        modifier = Modifier.width(300.dp),
-        drawerContainerColor = MaterialTheme.colorScheme.surface,
-        windowInsets = WindowInsets(0.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-        ) {
-            // 顶部卡片 (完美复刻原项目中的卡片设计样式，使用 Compose 绘制头像避免依赖外部资源文件)
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onCloseDrawer(); onNavigateToAbout() }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 自定义头像容器
                     Box(
                         modifier = Modifier
-                            .size(54.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(
-                                        MaterialTheme.colorScheme.primary,
-                                        MaterialTheme.colorScheme.secondary
-                                    )
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background)
+                            .blur(blurRadius)
                     ) {
-                        Text(
-                            text = "HD",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column {
-                        Text(
-                            text = "HDAmieViewer",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "关于此应用",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        NavHost(navController = navController, startDestination = "Home") {
+                            composable(
+                                route = "Home",
+                                popEnterTransition = { scaleIn(initialScale = 0.9f, animationSpec = tween(400)) + fadeIn(animationSpec = tween(400)) },
+                                exitTransition = { scaleOut(targetScale = 0.9f, animationSpec = tween(400)) + fadeOut(animationSpec = tween(400)) }
+                            ) {
+                                HomeScreen(onOpenDrawer = { coroutineScope.launch { drawerState.open() } })
+                            }
+
+                            composable(
+                                route = "Settings",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                exitTransition = { scaleOut(targetScale = 0.9f, animationSpec = tween(400)) + fadeOut(animationSpec = tween(400)) },
+                                popEnterTransition = { scaleIn(initialScale = 0.9f, animationSpec = tween(400)) + fadeIn(animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                SettingsPage(
+                                    themeMode = themeMode,
+                                    onThemeChange = { themeMode = it },
+                                    themeColor = themeColor,
+                                    onThemeColorChange = { themeColor = it },
+                                    updateChannel = updateChannel,
+                                    onUpdateChannelChange = { updateChannel = it },
+                                    autoCheckUpdate = autoCheckUpdate,
+                                    onAutoCheckUpdateChange = { autoCheckUpdate = it },
+                                    onManualCheckUpdate = {
+                                        Toast.makeText(context, "正在检查更新...", Toast.LENGTH_SHORT).show()
+                                        coroutineScope.launch {
+                                            checkAppUpdate(currentAppVersion, updateChannel) { release, isLatest, errorMsg ->
+                                                if (release != null) {
+                                                    updateInfo = release
+                                                } else if (isLatest) {
+                                                    Toast.makeText(context, "当前已是最新版本 ($currentAppVersion)", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    // 显示具体的 HTTP 状态码或连接报错
+                                                    Toast.makeText(context, "检查更新失败\n原因: $errorMsg", Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onNavigateToExportBackup = { navController.navigate("ExportBackup") },
+                                    onImportBackupClick = { importDocLauncher.launch(arrayOf("*/*")) },
+                                    onNavigateToAbout = { navController.navigate("About") },
+                                    onBackClick = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable(
+                                route = "About",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Up, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Down, animationSpec = tween(400)) }
+                            ) {
+                                AboutPage(onBackClick = { navController.popBackStack() })
+                            }
+
+                            composable(
+                                route = "ExportBackup",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                ExportBackupScreen(
+                                    currentAppVersion = currentAppVersion,
+                                    timetables = timetables,
+                                    timeProfiles = timeProfiles,
+                                    onBackClick = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable(
+                                route = "ImportBackup",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                ImportBackupScreen(
+                                    backupData = pendingBackupToImport,
+                                    currentTimetables = timetables,
+                                    currentTimeProfiles = timeProfiles,
+                                    onImportSuccess = { updatedTimetables, updatedProfiles ->
+                                        timetables = updatedTimetables
+                                        timeProfiles = updatedProfiles
+                                        themeMode = sharedPrefs.getInt("theme_mode", 0)
+                                        themeColor = sharedPrefs.getLong("theme_color", defaultColor)
+                                        updateChannel = sharedPrefs.getInt("update_channel", 0)
+                                        autoCheckUpdate = sharedPrefs.getBoolean("auto_check_update", true)
+                                    },
+                                    onBackClick = {
+                                        pendingBackupToImport = null
+                                        navController.popBackStack()
+                                    }
+                                )
+                            }
+                        }
+
+                        // 版本不一致弹窗提示
+                        if (pendingBackupToVerify != null) {
+                            AlertDialog(
+                                onDismissRequest = { pendingBackupToVerify = null },
+                                title = { Text("备份版本不一致警告", fontWeight = FontWeight.Bold) },
+                                text = {
+                                    Text("该备份文件的源应用版本为 [${pendingBackupToVerify!!.appVersion}]，当前运行的版本为 [$currentAppVersion]。是否继续导入？")
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            pendingBackupToImport = pendingBackupToVerify
+                                            pendingBackupToVerify = null
+                                            navController.navigate("ImportBackup")
+                                        }
+                                    ) { Text("继续导入") }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { pendingBackupToVerify = null }) {
+                                        Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            )
+                        }
+
+                        // 新版本弹窗更新提示
+                        if (updateInfo != null) {
+                            val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                            AlertDialog(
+                                onDismissRequest = { updateInfo = null },
+                                title = { Text("发现新版本：${updateInfo!!.tag_name}", fontWeight = FontWeight.Bold) },
+                                text = {
+                                    Text(updateInfo!!.body, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                },
+                                confirmButton = {
+                                    Button(onClick = {
+                                        uriHandler.openUri(updateInfo!!.html_url)
+                                        updateInfo = null
+                                    }) { Text("前往 GitHub 下载") }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { updateInfo = null }) { Text("暂不更新", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                }
+                            )
+                        }
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // 第一行：左右排列的两个按钮
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-            ) {
-                DrawerMenuItem(
-                    icon = Icons.Default.Settings,
-                    text = "应用设置",
-                    modifier = Modifier.weight(1f)
-                ) {
-                    onCloseDrawer()
-                    onNavigateToSettings()
-                }
-                DrawerMenuItem(
-                    icon = Icons.Default.Info,
-                    text = "关于此应用",
-                    modifier = Modifier.weight(1f)
-                ) {
-                    onCloseDrawer()
-                    onNavigateToAbout()
-                }
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // 底部版本展示
-            Text(
-                text = "v1.0.0 (开发预览版)",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .padding(bottom = 16.dp)
-            )
         }
     }
 }
 
-// 侧边栏按钮封装组件
-@Composable
-fun DrawerMenuItem(
-    icon: ImageVector,
-    text: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    NavigationDrawerItem(
-        icon = { Icon(imageVector = icon, contentDescription = text, modifier = Modifier.size(20.dp)) },
-        label = {
-            Text(
-                text = text,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        },
-        selected = false,
-        onClick = onClick,
-        modifier = modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-    )
-}
+@Immutable
+data class NodeTime(val label: String, val start: String, val end: String, val isVisible: Boolean = true)
+
+@Immutable
+data class TimeProfile(val id: Int, val name: String, val nodes: List<NodeTime>)
+
+@Immutable
+data class TimetableData(
+    val id: Int,
+    val name: String,
+    val courses: List<Course>,
+    val termStart: String? = null,
+    val timeProfileId: Int = 1,
+    val totalWeeks: Int = 20
+)
+
+@Immutable
+data class Course(
+    val id: Int, val name: String, val room: String, val teacher: String,
+    val dayOfWeek: Int, val startNode: Int, val endNode: Int, val weekList: List<Int>,
+    val bgColor: Long = 0xFFE8EAF6L, val textColor: Long = 0xFF000000L,
+    val credits: String = "", val notes: String = ""
+)

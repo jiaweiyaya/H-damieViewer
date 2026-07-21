@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/jiaweiya/hdamieviewer/ui/theme/Theme.kt
 package com.jiaweiya.hdamieviewer.ui.theme
 
 import android.os.Build
