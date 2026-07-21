@@ -65,6 +65,9 @@ import java.net.URL
 import java.time.LocalDate
 import androidx.compose.ui.unit.sp
 import com.jiaweiya.hdamieviewer.pages.resolveThemeColor
+import androidx.navigation.navArgument
+import androidx.navigation.NavType
+import com.jiaweiya.hdamieviewer.pages.VideoPlayerScreen
 
 data class GithubRelease(
     val tag_name: String,
@@ -294,7 +297,12 @@ class MainActivity : ComponentActivity() {
                                 popEnterTransition = { scaleIn(initialScale = 0.9f, animationSpec = tween(400)) + fadeIn(animationSpec = tween(400)) },
                                 exitTransition = { scaleOut(targetScale = 0.9f, animationSpec = tween(400)) + fadeOut(animationSpec = tween(400)) }
                             ) {
-                                HomeScreen(onOpenDrawer = { coroutineScope.launch { drawerState.open() } })
+                                HomeScreen(
+                                    onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                    onVideoClick = { videoId ->
+                                        navController.navigate("Player/$videoId") // 2. 点击后携带 ID 导航至播放页
+                                    }
+                                )
                             }
 
                             composable(
@@ -376,6 +384,36 @@ class MainActivity : ComponentActivity() {
                                     onBackClick = {
                                         pendingBackupToImport = null
                                         navController.popBackStack()
+                                    }
+                                )
+                            }
+
+                            // 1. 注册播放器路由
+                            composable(
+                                route = "Player/{videoId}",
+                                arguments = listOf(navArgument("videoId") { type = NavType.StringType }),
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) { backStackEntry ->
+                                val videoId = backStackEntry.arguments?.getString("videoId") ?: ""
+                                VideoPlayerScreen(
+                                    videoId = videoId,
+                                    onBackClick = { navController.popBackStack() },
+                                    onHomeClick = {
+                                        // 返回主页面 Home，并清空中间栈
+                                        navController.navigate("Home") {
+                                            popUpTo("Home") { inclusive = true }
+                                        }
+                                    }
+                                )
+                            }
+
+                            // 2. 同时将 Home 路由的跳转回调对接过来
+                            composable("Home") {
+                                HomeScreen(
+                                    onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                    onVideoClick = { videoId ->
+                                        navController.navigate("Player/$videoId") // 导航至播放页面
                                     }
                                 )
                             }

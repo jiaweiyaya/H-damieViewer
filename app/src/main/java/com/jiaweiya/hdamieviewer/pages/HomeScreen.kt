@@ -62,14 +62,12 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 
 // ==================== Iwara API 数据实体定义 ====================
 
@@ -200,6 +198,7 @@ fun formatCount(count: Int): String {
 @Composable
 fun HomeScreen(
     onOpenDrawer: () -> Unit,
+    onVideoClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -301,28 +300,33 @@ fun HomeScreen(
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            // 1. 精选大卡片
+                            // 1. 精选大卡片：传入 onVideoClick
                             val featuredVideo = popularVideos.firstOrNull()
                             if (featuredVideo != null) {
-                                FeaturedCard(mediaItem = featuredVideo)
+                                FeaturedCard(
+                                    mediaItem = featuredVideo,
+                                    onVideoClick = onVideoClick // 传递给大卡片
+                                )
                             } else {
                                 FeaturedCardPlaceholder()
                             }
 
-                            // 2. 热门视频网格区域
+                            // 2. 热门视频网格：传入 onVideoClick
                             val gridVideos = popularVideos.drop(1).take(4)
                             MediaGridSection(
                                 title = "热门视频推荐",
                                 mediaList = gridVideos,
-                                isVideo = true
+                                isVideo = true,
+                                onVideoClick = onVideoClick // 传递给视频网格
                             )
 
-                            // 3. 热门图片网格区域
+                            // 3. 热门图片网格：如果图片不需要点击，或者点击后另有逻辑，可传入空 lambda {}
                             val gridImages = popularImages.take(4)
                             MediaGridSection(
                                 title = "精选图片推荐",
                                 mediaList = gridImages,
-                                isVideo = false
+                                isVideo = false,
+                                onVideoClick = {} // 图片暂时不响应点击，传入空实现
                             )
 
                             Spacer(modifier = Modifier.height(32.dp))
@@ -520,172 +524,17 @@ fun deleteSearchHistoryItem(context: Context, query: String) {
     prefs.edit().putString("search_history", Gson().toJson(currentList)).apply()
 }
 
-// ==================== 新版：带流式动画的搜索组件 ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SearchBar(modifier: Modifier = Modifier) {
-    var isSearchActive by remember { mutableStateOf(false) }
-    var searchText by remember { mutableStateOf("") }
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-
-    // --- 1. 静态未选中状态（图2样式：细灰色边框，小角，无焦点） ---
-    OutlinedCard(
-        onClick = {
-            searchText = ""
-            isSearchActive = true
-        },
-        modifier = modifier
-            .fillMaxWidth()
-            .height(40.dp) // 统一为 40.dp
-            .padding(end = 8.dp),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.1f)
-        ),
-        border = BorderStroke(1.dp, Color.Gray.copy(alpha = 0.5f))
+fun FeaturedCard(
+    mediaItem: IwaraMedia,
+    modifier: Modifier = Modifier,
+    onVideoClick: (String) -> Unit,
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
-                Text(
-                    text = "搜索内容...", // 占位词
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    fontSize = 14.sp
-                )
-            }
-        }
-    }
-
-    // --- 2. 悬浮展开弹窗与物理弹性动画 ---
-    if (isSearchActive) {
-        Dialog(
-            onDismissRequest = { isSearchActive = false },
-            properties = DialogProperties(
-                usePlatformDefaultWidth = false, // 允许对话框铺满宽度
-                decorFitsSystemWindows = true
-            )
-        ) {
-            // 控制动画展开的逻辑触发阀
-            var animateTrigger by remember { mutableStateOf(false) }
-            LaunchedEffect(Unit) {
-                animateTrigger = true
-            }
-
-            // 半透明遮罩层背景动画
-            val backdropAlpha by animateFloatAsState(
-                targetValue = if (animateTrigger) 0.6f else 0f,
-                animationSpec = tween(300),
-                label = "backdrop_alpha"
-            )
-
-            // 悬浮窗口宽度比、高度、圆角过渡弹性动画
-            val cardWidthFraction by animateFloatAsState(
-                targetValue = if (animateTrigger) 0.95f else 0.8f,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
-                label = "card_width"
-            )
-            val cardHeight by animateDpAsState(
-                targetValue = if (animateTrigger) 500.dp else 40.dp,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
-                label = "card_height"
-            )
-            val cardCornerRadius by animateDpAsState(
-                targetValue = if (animateTrigger) 16.dp else 8.dp,
-                animationSpec = tween(300),
-                label = "card_corners"
-            )
-
-            // 劫持返回键：退出时实现弹性折叠动画
-            BackHandler {
-                coroutineScope.launch {
-                    animateTrigger = false
-                    kotlinx.coroutines.delay(220) // 延迟关闭以确保动画缩回
-                    isSearchActive = false
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = backdropAlpha))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        // 点击黑障区关闭
-                        animateTrigger = false
-                        coroutineScope.launch {
-                            kotlinx.coroutines.delay(220)
-                            isSearchActive = false
-                        }
-                    },
-                contentAlignment = Alignment.TopCenter
-            ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth(cardWidthFraction)
-                        .height(cardHeight)
-                        .statusBarsPadding()  // 1. 自动适配不同手机的状态栏高度
-                        .padding(top = 10.dp) // 2. 边距微调，使展开前的卡片上边缘与主页搜索框上边缘重合
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { /* 拦截点击 */ },
-                    shape = RoundedCornerShape(cardCornerRadius),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    elevation = CardDefaults.cardElevation(8.dp)
-                ) {
-                    // 当高度扩张到一定阈值时才进行渲染，避免小高度时内容积压重叠
-                    if (cardHeight.value > 100f) {
-                        SearchExpandedContent(
-                            searchText = searchText,
-                            onSearchTextChange = { searchText = it },
-                            onSearchTriggered = { query ->
-                                saveSearchHistory(context, query)
-                                Toast.makeText(context, "搜索：$query", Toast.LENGTH_SHORT).show()
-                                // 触发搜索后折叠并退出
-                                animateTrigger = false
-                                coroutineScope.launch {
-                                    kotlinx.coroutines.delay(220)
-                                    isSearchActive = false
-                                }
-                            },
-                            onClose = {
-                                animateTrigger = false
-                                coroutineScope.launch {
-                                    kotlinx.coroutines.delay(220)
-                                    isSearchActive = false
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun FeaturedCard(mediaItem: IwaraMedia, modifier: Modifier = Modifier) {
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(16f / 9f),
+            .aspectRatio(16f / 9f)
+            .clickable { onVideoClick(mediaItem.id) },
         shape = RoundedCornerShape(16.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -782,6 +631,7 @@ fun MediaGridSection(
     title: String,
     mediaList: List<IwaraMedia>,
     isVideo: Boolean,
+    onVideoClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
@@ -808,6 +658,7 @@ fun MediaGridSection(
                         MediaItemCard(
                             mediaItem = mediaItem,
                             isVideo = isVideo,
+                            onVideoClick = onVideoClick, // 2. 向下传递给小卡片
                             modifier = Modifier.weight(1f)
                         )
                     } else {
@@ -820,12 +671,16 @@ fun MediaGridSection(
 }
 
 @Composable
-fun MediaItemCard(mediaItem: IwaraMedia, isVideo: Boolean, modifier: Modifier = Modifier) {
+fun MediaItemCard(mediaItem: IwaraMedia,
+                  isVideo: Boolean,
+                  onVideoClick: (String) -> Unit,
+                  modifier: Modifier = Modifier) {
     Column(modifier = modifier) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f),
+                .aspectRatio(16f / 9f)
+                .clickable { onVideoClick(mediaItem.id) },
             shape = RoundedCornerShape(12.dp)
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
