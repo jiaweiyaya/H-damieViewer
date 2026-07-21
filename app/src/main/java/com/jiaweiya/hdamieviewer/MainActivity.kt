@@ -169,7 +169,7 @@ class MainActivity : ComponentActivity() {
             var playerType by remember { mutableStateOf(sharedPrefs.getInt("player_type", 0)) }
 
             // 监听并实时存储状态
-            LaunchedEffect(themeMode, themeColor, updateChannel, autoCheckUpdate) {
+            LaunchedEffect(themeMode, themeColor, updateChannel, autoCheckUpdate, playerType) {
                 withContext(Dispatchers.IO) {
                     sharedPrefs.edit()
                         .putInt("theme_mode", themeMode)
@@ -409,16 +409,6 @@ class MainActivity : ComponentActivity() {
                                         navController.navigate("Home") {
                                             popUpTo("Home") { inclusive = true }
                                         }
-                                    }
-                                )
-                            }
-
-                            // 2. 同时将 Home 路由的跳转回调对接过来
-                            composable("Home") {
-                                HomeScreen(
-                                    onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
-                                    onVideoClick = { videoId ->
-                                        navController.navigate("Player/$videoId") // 导航至播放页面
                                     }
                                 )
                             }

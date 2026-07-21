@@ -24,7 +24,8 @@
             android:enabled="true"
             android:exported="true"
             android:theme="@style/Theme.HdamieViewer"
-            android:windowSoftInputMode="adjustResize" />
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
 
         <!-- 1. 默认图标入口（默认开启） -->
         <activity-alias

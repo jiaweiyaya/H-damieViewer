@@ -1,6 +1,7 @@
 package com.jiaweiya.hdamieviewer.pages
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
@@ -53,6 +54,19 @@ import java.net.URL
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 
 // ==================== Iwara 详情 API 专属数据模型 ====================
 
@@ -157,15 +171,33 @@ fun VideoPlayerScreen(
     val context = LocalContext.current
 
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
-    val playerType = remember { sharedPrefs.getInt("player_type", 0) }
+    val playerType = sharedPrefs.getInt("player_type", 0) // 去除 remember，保证每次进入实时读取最新
 
     var debugLog by remember { mutableStateOf("") }
     var showDebugDialog by remember { mutableStateOf(false) }
 
+    // 获取当前窗口的 Activity 与屏幕旋转方向状态
+    val activity = remember(context) { context as? android.app.Activity }
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    // 智能劫持物理返回键：如果在横屏，按返回键先退出横屏；如果在竖屏，则正常 pop 返回主页
+    BackHandler {
+        activity?.let { act ->
+            if (act.requestedOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                act.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                val controller = androidx.core.view.WindowCompat.getInsetsController(act.window, act.window.decorView)
+                controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) // 显示系统状态栏
+            } else {
+                onBackClick()
+            }
+        } ?: onBackClick()
+    }
+
     LaunchedEffect(videoId) {
         isLoading = true
         debugLog = "--- 开始排查视频加载链路 ---\n"
-        debugLog += "1. 视频 ID: $videoId\n"
+        debugLog += "1. 视频 ID: $videoId, 播放器类型代码: $playerType\n"
 
         val detail = fetchVideoDetail(videoId)
         videoDetail = detail
@@ -178,7 +210,6 @@ fun VideoPlayerScreen(
             if (!detail.fileUrl.isNullOrEmpty()) {
                 debugLog += "3. 开始请求直链接口并获取原始数据...\n"
 
-                // 抓取直链原始 JSON
                 val rawJson = fetchRawFormatsJson(detail.fileUrl)
                 debugLog += "   - 接口响应报文:\n$rawJson\n\n"
 
@@ -192,7 +223,6 @@ fun VideoPlayerScreen(
                             debugLog += "   - 分支 [${it.name}]: view=${it.src?.view}\n"
                         }
 
-                        // 筛选最优画质
                         val bestFormat = formats.find { it.name == "Source" }
                             ?: formats.find { it.name == "540p" }
                             ?: formats.find { it.name == "360p" }
@@ -240,181 +270,222 @@ fun VideoPlayerScreen(
             val likes = detail.numLikes ?: 0
             val dateStr = detail.createdAt?.take(10) ?: "未知日期"
 
-            // 头像路径拼接
             val avatarUrl = if (detail.user?.avatar != null) {
                 "https://files.iwara.tv/image/avatar/${detail.user.avatar.id}/${detail.user.avatar.name}"
             } else ""
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .background(MaterialTheme.colorScheme.background)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // 1. 顶部视频播放器区域 (16:9)
+            // 【自适应重绘】：如果是横屏模式，强制不展示任何图文列表，让播放器占满屏幕
+            if (isLandscape) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
+                        .fillMaxSize()
                         .background(Color.Black)
                 ) {
                     if (!videoUrl.isNullOrEmpty()) {
-                        // 根据选择的播放器类型进行渲染
-                        when (playerType) {
-                            1 -> MpvMinimalPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize()) // 极简美化版
-                            2 -> NativeMediaPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize()) // 系统原生版
-                            else -> VideoPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize()) // ExoPlayer 默认版
+                        MpvMinimalPlayer(
+                            videoUrl = videoUrl!!,
+                            onBackClick = {
+                                // 横屏下按返回，恢复竖屏并重置系统状态栏
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                                activity?.window?.let { win ->
+                                    androidx.core.view.WindowCompat.getInsetsController(win, win.decorView).show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                                }
+                            },
+                            onHomeClick = onHomeClick,
+                            onFullscreenClick = {
+                                // 点击右下角退出全屏，恢复竖屏
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                                activity?.window?.let { win ->
+                                    androidx.core.view.WindowCompat.getInsetsController(win, win.decorView).show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            } else {
+                // 正常的竖屏 Scaffold 滚动列表
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .background(MaterialTheme.colorScheme.background)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // 1. 顶部视频播放器区域 (16:9，带状态栏安全避让)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black)
+                            .statusBarsPadding() // 追加此行，修复“状态栏挡住画面”的问题
+                            .aspectRatio(16f / 9f)
+                    ) {
+                        if (!videoUrl.isNullOrEmpty()) {
+                            when (playerType) {
+                                1 -> MpvMinimalPlayer(
+                                    videoUrl = videoUrl!!,
+                                    onBackClick = onBackClick,
+                                    onHomeClick = onHomeClick,
+                                    onFullscreenClick = {
+                                        // 点击右下角全屏，旋转为横屏并隐藏系统栏
+                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                        activity?.window?.let { win ->
+                                            val controller = androidx.core.view.WindowCompat.getInsetsController(win, win.decorView)
+                                            controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                                            controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                2 -> NativeMediaPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize())
+                                else -> VideoPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize())
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(color = Color.White)
+                            }
                         }
-                    } else {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(color = Color.White)
+
+                        // 只有在非“极简美化版 (MpvPlayer)”时，才在外层堆叠常驻的控制顶栏
+                        if (playerType != 1) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = onBackClick,
+                                    colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f))
+                                ) {
+                                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
+                                }
+                                IconButton(
+                                    onClick = onHomeClick,
+                                    colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f))
+                                ) {
+                                    Icon(imageVector = Icons.Default.Home, contentDescription = "主页", tint = Color.White)
+                                }
+                            }
                         }
                     }
 
-                    // 返回与主页操控栏
+                    // 2. 作者栏配置
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .statusBarsPadding()
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        IconButton(
-                            onClick = onBackClick,
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f))
-                        ) {
-                            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
-                        }
-                        IconButton(
-                            onClick = onHomeClick,
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f))
-                        ) {
-                            Icon(imageVector = Icons.Default.Home, contentDescription = "主页", tint = Color.White)
-                        }
-                    }
-                }
-
-                // 2. 作者栏配置
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // 用户头像加载
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (avatarUrl.isNotEmpty()) {
-                                AsyncImage(
-                                    model = avatarUrl,
-                                    contentDescription = "用户头像",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                            } else {
-                                Text(
-                                    text = videoAuthor.take(1),
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (avatarUrl.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = avatarUrl,
+                                        contentDescription = "用户头像",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Text(
+                                        text = videoAuthor.take(1),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(text = videoAuthor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                Text(text = "专栏创作者", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(text = videoAuthor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            Text(text = "专栏创作者", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                        Button(
+                            onClick = {},
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Text("关注", color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 13.sp)
                         }
                     }
 
-                    Button(
-                        onClick = {},
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
-                        modifier = Modifier.height(36.dp)
+                    // 3. 视频标题、播放量与日期信息
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("关注", color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 13.sp)
+                        Text(text = videoTitle, fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
+                        Text(
+                            text = "${formatCount(views)}次播放  |  $dateStr",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                }
 
-                // 3. 视频标题、播放量与日期信息
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(text = videoTitle, fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
-                    Text(
-                        text = "${formatCount(views)}次播放  |  $dateStr",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 4. 简介折叠展开层 (自适应内容高度与展开按键避让)
-                ExpandableDescription(
-                    text = videoDesc,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // 5. 快速操作按键行
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    ActionButton(Icons.Default.TaskAlt, "快速打卡")
-                    ActionButton(Icons.Default.FavoriteBorder, "加入喜欢")
-                    ActionButton(Icons.Default.BookmarkBorder, "加入清单")
-                    ActionButton(Icons.Default.Download, "下载")
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // 6. 自适应两行高度并带有箭头的标签栏
-                if (videoTags.isNotEmpty()) {
-                    TagsSection(
-                        tags = videoTags,
+                    ExpandableDescription(
+                        text = videoDesc,
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
-                }
 
-                Spacer(modifier = Modifier.height(24.dp))
-                OutlinedButton(
-                    onClick = { showDebugDialog = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("查看并复制接口调试信息", fontSize = 13.sp)
-                }
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                Spacer(modifier = Modifier.height(40.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        ActionButton(Icons.Default.TaskAlt, "快速打卡")
+                        ActionButton(Icons.Default.FavoriteBorder, "加入喜欢")
+                        ActionButton(Icons.Default.BookmarkBorder, "加入清单")
+                        ActionButton(Icons.Default.Download, "下载")
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    if (videoTags.isNotEmpty()) {
+                        TagsSection(
+                            tags = videoTags,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                    OutlinedButton(
+                        onClick = { showDebugDialog = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("查看并复制接口调试信息", fontSize = 13.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(40.dp))
+                }
             }
         } else {
-            // 加载失败占位
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -436,7 +507,7 @@ fun VideoPlayerScreen(
                         .height(300.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    SelectionContainer { // 允许用户在弹窗中双击、长按自由选择复制文本
+                    SelectionContainer {
                         Text(
                             text = debugLog,
                             fontSize = 11.sp,
@@ -545,7 +616,7 @@ fun ActionButton(icon: ImageVector, label: String) {
 }
 
 // 3. 标签栏：最大 2 行自适应展开折叠
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun TagsSection(tags: List<String>, modifier: Modifier = Modifier) {
     var isExpanded by remember { mutableStateOf(false) }
@@ -604,10 +675,17 @@ fun TagsSection(tags: List<String>, modifier: Modifier = Modifier) {
 
 // ==================== 播放器扩展内核 ====================
 
-// MpvPlayer (极简美化版)：关闭 ExoPlayer 原生庞大的控制器，纯靠 Compose 绘制不占任何空间的底部超薄进度线与手势暂停
-@OptIn(UnstableApi::class)
+// pages/VideoPlayerScreen.kt -> 文件底部的 MpvMinimalPlayer 函数
+
+@OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun MpvMinimalPlayer(videoUrl: String, modifier: Modifier = Modifier) {
+fun MpvMinimalPlayer(
+    videoUrl: String,
+    onBackClick: () -> Unit,
+    onHomeClick: () -> Unit,
+    onFullscreenClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
 
     val exoPlayer = remember(videoUrl) {
@@ -619,17 +697,29 @@ fun MpvMinimalPlayer(videoUrl: String, modifier: Modifier = Modifier) {
         }
     }
 
-    // 播放进度及暂停状态实时监测
+    // 播放进度与控制栏显示状态
     var currentPosition by remember { mutableLongStateOf(0L) }
+    var bufferedPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
+    var isControlsVisible by remember { mutableStateOf(true) }
 
+    // 进度轮询监听
     LaunchedEffect(exoPlayer) {
         while (true) {
             currentPosition = exoPlayer.currentPosition
+            bufferedPosition = exoPlayer.bufferedPosition
             duration = exoPlayer.duration.coerceAtLeast(0L)
             isPlaying = exoPlayer.isPlaying
-            kotlinx.coroutines.delay(250) // 每 250 毫秒刷新一次极细进度线
+            kotlinx.coroutines.delay(250) // 250 毫秒高频刷新细进度条，获得最佳拖动回馈
+        }
+    }
+
+    // 自动退场：播放状态下 3 秒无操作自动缩回控制栏
+    LaunchedEffect(isControlsVisible, isPlaying) {
+        if (isControlsVisible && isPlaying) {
+            kotlinx.coroutines.delay(3000)
+            isControlsVisible = false
         }
     }
 
@@ -638,54 +728,194 @@ fun MpvMinimalPlayer(videoUrl: String, modifier: Modifier = Modifier) {
     }
 
     Box(
-        modifier = modifier.clickable {
-            // 点击整个画面直接控制 暂停 / 播放，无需任何按钮占用空间
-            if (exoPlayer.isPlaying) {
-                exoPlayer.pause()
-            } else {
-                exoPlayer.play()
+        modifier = modifier
+            .background(Color.Black)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                isControlsVisible = !isControlsVisible // 单击整个视频区域自由开关控制台
             }
-            isPlaying = exoPlayer.isPlaying
-        }
     ) {
+        // 底层视频画面
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     player = exoPlayer
-                    useController = false // 完全关闭原生臃肿控制器
+                    useController = false // 完全关闭原生臃肿的大控制台
                 }
             },
             modifier = Modifier.fillMaxSize()
         )
 
-        // 仅在暂停时才在中心呈现一个轻微半透明的播放指示，播放时全屏无任何内容遮挡，纯净美观
-        if (!isPlaying) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.25f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "暂停",
-                    tint = Color.White,
-                    modifier = Modifier.size(56.dp)
-                )
-            }
-        }
+        // Bilibili 风格的高级 Compose 自定义悬浮控制面板
+        AnimatedVisibility(
+            visible = isControlsVisible,
+            enter = fadeIn(animationSpec = tween(300)),
+            exit = fadeOut(animationSpec = tween(300))
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
 
-        // 底部极细、完全不占空间的主题色进度条指示
-        if (duration > 0f) {
-            LinearProgressIndicator(
-                progress = { currentPosition.toFloat() / duration.toFloat() },
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = Color.White.copy(alpha = 0.2f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp) // 极细设计
-                    .align(Alignment.BottomCenter)
-            )
+                // 1. 顶部控制栏（返回、主页、附带由上至下的渐变阴影）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent)
+                            )
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onBackClick,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    IconButton(
+                        onClick = onHomeClick,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Home, contentDescription = "主页", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                // 2. 底部控制栏（小巧的播放暂停键、超细 Bilibili 进度条、时间比例、全屏键、下至上渐变阴影）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f))
+                            )
+                        )
+                        .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 左下角：紧凑的播放暂停控制
+                    IconButton(
+                        onClick = {
+                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            isPlaying = exoPlayer.isPlaying
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = "播放暂停",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+// 中间：【完美还原 Bilibili】超细轨加极小滑块的进度条
+                    var widthPx by remember { mutableIntStateOf(0) } // 实时测量滚动条物理宽度
+                    val density = LocalDensity.current
+
+                    // 【核心修复】：重新补回这个外层触摸容器！它负责用 weight(1f) 挤压均分空间，提供舒适的触控高度，并将 2.dp 轨道垂直居中
+                    Box(
+                        modifier = Modifier
+                            .weight(1f) // 1. 均分剩余空间，绝不挤压旁边的文字和全屏键
+                            .height(32.dp) // 2. 提供 32.dp 的舒适垂直触控高度
+                            .onGloballyPositioned { widthPx = it.size.width }
+                            // 3. 绑定点击跳转进度手势
+                            .pointerInput(duration) {
+                                detectTapGestures { offset ->
+                                    if (widthPx > 0 && duration > 0) {
+                                        val fraction = (offset.x / widthPx).coerceIn(0f, 1f)
+                                        val targetPos = (fraction * duration).toLong()
+                                        exoPlayer.seekTo(targetPos)
+                                        currentPosition = targetPos
+                                    }
+                                }
+                            }
+                            // 4. 绑定左右滑动拖拽手势
+                            .pointerInput(duration) {
+                                detectHorizontalDragGestures { change, _ ->
+                                    change.consume()
+                                    if (widthPx > 0 && duration > 0) {
+                                        val fraction = (change.position.x / widthPx).coerceIn(0f, 1f)
+                                        val targetPos = (fraction * duration).toLong()
+                                        exoPlayer.seekTo(targetPos)
+                                        currentPosition = targetPos
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.CenterStart // 5. 让内部的 2.dp 轨道在 32.dp 容器内完美垂直居中！
+                    ) {
+                        val fraction = if (duration > 0) (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+                        val bufferedFraction = if (duration > 0) (bufferedPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+
+                        // 轨道 (Track) - 最底层 (浅透明度)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.dp)
+                                .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(1.dp))
+                        ) {
+                            // 已缓存的进度 (Buffered Progress) - 中间层 (采用半透明白)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(bufferedFraction)
+                                    .fillMaxHeight()
+                                    .background(Color.White.copy(alpha = 0.45f), RoundedCornerShape(1.dp))
+                            )
+
+                            // 已播放的进度 (Active Progress) - 最顶层 (主题粉/紫)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(fraction)
+                                    .fillMaxHeight()
+                                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp))
+                            )
+                        }
+
+                        // 极细进度条上的【极小滑点 (Thumb)】：随播放进度实时平移，美观无遮挡
+                        Box(
+                            modifier = Modifier
+                                .graphicsLayer {
+                                    val thumbSizePx = 8.dp.toPx()
+                                    val maxOffsetPx = widthPx - thumbSizePx
+                                    translationX = fraction * maxOffsetPx
+                                }
+                                .size(8.dp)
+                                .background(MaterialTheme.colorScheme.primary, CircleShape)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // 进度条末尾：“已播放时间 / 总时长”文本配置
+                    Text(
+                        text = "${formatTime(currentPosition)} / ${formatTime(duration)}",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // 右下角：全屏切换图标按键（绑定对应的全屏点击事件）
+                    IconButton(
+                        onClick = onFullscreenClick,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Fullscreen,
+                            contentDescription = "全屏",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -725,5 +955,19 @@ suspend fun fetchRawFormatsJson(fileUrl: String): String? {
         } catch (e: Exception) {
             "连接异常: ${e.localizedMessage ?: e.message ?: "未知网络错误"}"
         }
+    }
+}
+
+// ==================== 播放时间数值格式化辅助函数 ====================
+
+fun formatTime(ms: Long): String {
+    val totalSeconds = ms / 1000
+    val seconds = totalSeconds % 60
+    val minutes = (totalSeconds / 60) % 60
+    val hours = totalSeconds / 3600
+    return if (hours > 0) {
+        String.format("%02d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format("%02d:%02d", minutes, seconds)
     }
 }
