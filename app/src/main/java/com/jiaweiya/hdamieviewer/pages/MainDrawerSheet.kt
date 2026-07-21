@@ -71,7 +71,7 @@ fun MainDrawerSheet(
                         Spacer(modifier = Modifier.width(16.dp))
                         Column {
                             Text(
-                                "FlowCourse",
+                                "H-damieViewer",
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.primary
@@ -131,7 +131,7 @@ fun MainDrawerSheet(
             Spacer(modifier = Modifier.weight(1f))
 
             Text(
-                text = "v1.0.0 (HDAmieViewer)",
+                text = "v1.0.0 (H-damieViewer)",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 modifier = Modifier
