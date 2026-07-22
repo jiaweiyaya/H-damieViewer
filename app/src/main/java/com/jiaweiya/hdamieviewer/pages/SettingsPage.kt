@@ -48,6 +48,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import androidx.compose.foundation.LocalIndication
+import android.annotation.SuppressLint
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+
 
 // 补回缺少的常量及转换函数
 val colorOptions = listOf(
@@ -131,12 +137,18 @@ fun SettingsPage(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
 
+    val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
+    var longPressSpeed by remember { mutableFloatStateOf(sharedPrefs.getFloat("long_press_speed", 2.0f)) }
+    var vibrationDuration by remember { mutableIntStateOf(sharedPrefs.getInt("vibration_duration", 50)) }
+
     var showThemeDialog by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
     var showChannelDialog by remember { mutableStateOf(false) }
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showAppIconDialog by remember { mutableStateOf(false) }
     var showPlayerDialog by remember { mutableStateOf(false) }
+    var showSpeedDialog by remember { mutableStateOf(false) }
+    var showVibrationDialog by remember { mutableStateOf(false) }
 
     var cacheSizeStr by remember { mutableStateOf("计算中...") }
 
@@ -352,7 +364,73 @@ fun SettingsPage(
                 }
             }
 
-            // 3. 应用更新分区
+            // 3. 交互控制分区
+            item {
+                ScrollFadeIn {
+                    Text(
+                        text = "交互控制",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
+                    )
+
+                    // 1. 长按播放速度
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showSpeedDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("长按播放速度", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val displaySpeedStr = if (longPressSpeed <= 1.0f) "不启用" else "x$longPressSpeed"
+                            Text(displaySpeedStr, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // 2. 震动时长
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showVibrationDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("震动时长", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val displayVibStr = if (vibrationDuration <= 0) "已关闭" else "${vibrationDuration} ms"
+                            Text(displayVibStr, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+            }
+
+            // 4. 应用更新分区
             item {
                 ScrollFadeIn {
                     Text(
@@ -578,6 +656,30 @@ fun SettingsPage(
             },
             dismissButton = {
                 TextButton(onClick = { showClearCacheDialog = false }) { Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        )
+    }
+
+    if (showSpeedDialog) {
+        LongPressSpeedDialog(
+            currentSpeed = longPressSpeed,
+            onDismiss = { showSpeedDialog = false },
+            onSave = { newSpeed ->
+                longPressSpeed = newSpeed
+                sharedPrefs.edit().putFloat("long_press_speed", newSpeed).apply()
+                showSpeedDialog = false
+            }
+        )
+    }
+
+    if (showVibrationDialog) {
+        VibrationDurationDialog(
+            currentDuration = vibrationDuration,
+            onDismiss = { showVibrationDialog = false },
+            onSave = { newDuration ->
+                vibrationDuration = newDuration
+                sharedPrefs.edit().putInt("vibration_duration", newDuration).apply()
+                showVibrationDialog = false
             }
         )
     }
@@ -1286,6 +1388,177 @@ fun PlayerSelectionDialog(
     )
 }
 
+// 1. 长按倍速 4列3行 弹窗（同款流动高亮框样式）
+@Composable
+fun LongPressSpeedDialog(
+    currentSpeed: Float,
+    onDismiss: () -> Unit,
+    onSave: (Float) -> Unit
+) {
+    var selectedSpeed by remember { mutableFloatStateOf(currentSpeed) }
+    val itemBoundsInRoot = remember { mutableStateMapOf<Float, Rect>() }
+    var boxBoundsInRoot by remember { mutableStateOf(Rect.Zero) }
+    val density = LocalDensity.current
+
+    val speedGrid = listOf(
+        listOf(1.0f to "不启用", 1.25f to "x1.25", 1.5f to "x1.5", 1.75f to "x1.75"),
+        listOf(2.0f to "x2.0", 2.25f to "x2.25", 2.5f to "x2.5", 2.75f to "x2.75"),
+        listOf(3.0f to "x3.0", 3.25f to "x3.25", 3.5f to "x3.5", 3.75f to "x3.75")
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("长按播放速度", fontWeight = FontWeight.Bold) },
+        text = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+                    .onGloballyPositioned { coords -> boxBoundsInRoot = coords.boundsInRoot() }
+            ) {
+                val targetItemRoot = itemBoundsInRoot[selectedSpeed] ?: Rect.Zero
+                val targetRelative = if (targetItemRoot != Rect.Zero && boxBoundsInRoot != Rect.Zero) {
+                    targetItemRoot.translate(-boxBoundsInRoot.left, -boxBoundsInRoot.top)
+                } else Rect.Zero
+
+                if (targetRelative != Rect.Zero) {
+                    val padding = 4.dp
+                    val paddingPx = with(density) { padding.toPx() }
+                    val animSpec = spring<Float>(dampingRatio = 0.65f, stiffness = 400f)
+
+                    val animLeft by animateFloatAsState(targetRelative.left - paddingPx, animSpec, label = "X")
+                    val animTop by animateFloatAsState(targetRelative.top - paddingPx, animSpec, label = "Y")
+                    val animWidth by animateFloatAsState(targetRelative.width + paddingPx * 2, animSpec, label = "W")
+                    val animHeight by animateFloatAsState(targetRelative.height + paddingPx * 2, animSpec, label = "H")
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset { IntOffset(animLeft.roundToInt(), animTop.roundToInt()) }
+                            .size(with(density) { animWidth.toDp() }, with(density) { animHeight.toDp() })
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    speedGrid.forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            rowItems.forEach { (speedVal, label) ->
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp)
+                                        .padding(horizontal = 2.dp)
+                                        .onGloballyPositioned { coords -> itemBoundsInRoot[speedVal] = coords.boundsInRoot() }
+                                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                            selectedSpeed = speedVal
+                                        }
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (selectedSpeed == speedVal) Color.Transparent
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selectedSpeed == speedVal) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (selectedSpeed == speedVal) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val hasChanged = selectedSpeed != currentSpeed
+            Button(
+                onClick = { onSave(selectedSpeed) },
+                enabled = hasChanged,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("保存并应用")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    )
+}
+
+// 2. 震动时长滑条测试弹窗
+@Composable
+fun VibrationDurationDialog(
+    currentDuration: Int,
+    onDismiss: () -> Unit,
+    onSave: (Int) -> Unit
+) {
+    val context = LocalContext.current
+    var sliderValue by remember { mutableFloatStateOf(currentDuration.toFloat()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("震动时长", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = if (sliderValue.roundToInt() == 0) "关闭震动" else "${sliderValue.roundToInt()} ms",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Slider(
+                    value = sliderValue,
+                    onValueChange = { sliderValue = it },
+                    valueRange = 0f..150f,
+                    steps = 149
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        triggerVibration(context, sliderValue.roundToInt().toLong())
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("测试")
+                }
+                Button(
+                    onClick = { onSave(sliderValue.roundToInt()) },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("确认")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    )
+}
+
 private fun getFolderSize(file: java.io.File?): Long {
     if (file == null || !file.exists()) return 0L
     if (file.isFile) return file.length()
@@ -1341,4 +1614,29 @@ private fun formatCacheSize(sizeInBytes: Long): String {
     if (sizeInKiB < 1024.0) { return String.format("%.3f KiB", sizeInKiB) }
     val sizeInMiB = sizeInKiB / 1024.0
     return String.format("%.3f MiB", sizeInMiB)
+}
+
+// 通用触觉震动反馈函数
+@SuppressLint("MissingPermission")
+fun triggerVibration(context: Context, durationMs: Long) {
+    if (durationMs <= 0) return
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            vibratorManager?.defaultVibrator?.vibrate(
+                VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(durationMs)
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
 }

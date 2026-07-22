@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -67,8 +68,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.filled.Replay
@@ -87,6 +90,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.shrinkOut
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.input.pointer.changedToUp
 
 // ==================== Iwara 详情 API 专属数据模型 ====================
 
@@ -515,7 +519,7 @@ fun executeFollowViaWebView(
 
 // ==================== 播放器页面主体 ====================
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun VideoPlayerScreen(
     videoId: String,
@@ -559,7 +563,13 @@ fun VideoPlayerScreen(
     val playerType = sharedPrefs.getInt("player_type", 0) // 去除 remember，保证每次进入实时读取最新
 
     // 【核心修复 1】：将 ExoPlayer 的生命周期提升到最顶层管理，脱离分支，使其在旋转重绘时不受干扰
-    val exoPlayer = remember { ExoPlayer.Builder(context).build() }
+    // 开启硬件级 AudioTrack 变速，彻底解决倍速切换时的画面顿挫与 Buffer 延迟
+    val exoPlayer = remember {
+        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context)
+            .setEnableAudioTrackPlaybackParams(true)
+        androidx.media3.exoplayer.ExoPlayer.Builder(context, renderersFactory)
+            .build()
+    }
 
     // 声明视频真实宽高状态
     var videoWidth by remember { mutableIntStateOf(0) }
@@ -1336,6 +1346,20 @@ fun MpvMinimalPlayer(
 
     // 读取用户设置的横屏左右边距
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
+    // 读取长按倍速与震动设置
+    val longPressSpeed = remember { sharedPrefs.getFloat("long_press_speed", 2.0f) }
+    val vibDuration = remember { sharedPrefs.getInt("vibration_duration", 50) }
+    var isSpeedingUp by remember { mutableStateOf(false) }
+    val currentView = androidx.compose.ui.platform.LocalView.current
+
+    // 防重复设置倍速变量
+    var lastSetSpeed by remember { mutableFloatStateOf(1.0f) }
+    fun applySpeed(speed: Float) {
+        if (lastSetSpeed != speed) {
+            lastSetSpeed = speed
+            exoPlayer.setPlaybackSpeed(speed)
+        }
+    }
     val leftMarginDp = remember(isLandscape) {
         if (isLandscape) sharedPrefs.getInt("fullscreen_margin_left", 0).dp else 0.dp
     }
@@ -1498,33 +1522,99 @@ fun MpvMinimalPlayer(
         }
     }
 
+    // 最外层容器
     Box(
-        modifier = modifier
-            .background(Color.Black)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
+        modifier = modifier.background(Color.Black)
+    ) {
+        // 【第一层：底层视频画面 + 独立长按手势监听层】（独立挂载，避免影响顶层进度条）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(longPressSpeed, vibDuration) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            // requireUnconsumed = true：只捕获未被进度条/按钮消费的空白区域按下！
+                            val down = awaitFirstDown(requireUnconsumed = true)
+                            var isLongPressTriggered = false
+
+                            // 250ms 定时器
+                            val longPressJob = coroutineScope.launch {
+                                kotlinx.coroutines.delay(250)
+                                if (longPressSpeed > 1.0f) {
+                                    isLongPressTriggered = true
+                                    isSpeedingUp = true
+                                    triggerVibration(context, vibDuration.toLong())
+                                    applySpeed(longPressSpeed)
+                                }
+                            }
+
+                            // 毫秒级检测手指抬起
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val isUp = event.changes.any { it.changedToUp() }
+                                if (isUp || event.changes.isEmpty()) {
+                                    break
+                                }
+                            }
+
+                            longPressJob.cancel()
+
+                            if (isLongPressTriggered) {
+                                // 抬起手指：立刻恢复 1.0x 正常倍速
+                                isSpeedingUp = false
+                                applySpeed(1.0f)
+                            } else {
+                                // 普通单击：开关控制栏
+                                if (isResolutionMenuExpanded) {
+                                    isResolutionMenuExpanded = false
+                                } else {
+                                    isControlsVisible = !isControlsVisible
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // 【第二层：长按倍速顶部提示条】
+        if (isSpeedingUp) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.Black.copy(alpha = 0.75f))
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
             ) {
-                // 点击空白区域的处理逻辑：
-                if (isResolutionMenuExpanded) {
-                    // 1. 如果画质菜单处于展开状态，仅收起菜单，不改变控制栏显示状态
-                    isResolutionMenuExpanded = false
-                } else {
-                    // 2. 菜单未展开时，正常开关控制栏
-                    isControlsVisible = !isControlsVisible
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.FastForward,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "x${longPressSpeed} 倍速中",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
-    ) {
-        // 底层视频画面
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false // 完全关闭原生臃肿的大控制台
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        }
 
         if (playerErrorMsg != null) {
             // 在视频播放区域中央直接显示错误提示，代替黑色 0 分钟画面
@@ -1829,6 +1919,7 @@ fun MpvMinimalPlayer(
                 }
             }
         }
+
     }
 }
 
