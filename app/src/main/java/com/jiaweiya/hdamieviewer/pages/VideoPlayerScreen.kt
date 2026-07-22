@@ -70,6 +70,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.text.style.TextAlign
 import java.security.MessageDigest
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
@@ -1002,6 +1004,43 @@ fun MpvMinimalPlayer(
         }
     }
 
+    // 声明播放错误提示状态
+    var playerErrorMsg by remember { mutableStateOf<String?>(null) }
+
+    // 当切换画质或链接改变时，重置错误状态
+    LaunchedEffect(videoUrl) {
+        playerErrorMsg = null
+    }
+
+    // 监听 ExoPlayer 的异常（包括 HTTP 418, 403, 404 等网络响应错误）
+    DisposableEffect(exoPlayer) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val cause = error.cause
+                if (cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                    val code = cause.responseCode
+                    if (code == 418) {
+                        playerErrorMsg = "该画质分支响应 HTTP 418 (I'm a teapot)\n服务器拒绝提供此流，请尝试切换其他画质"
+                    } else {
+                        playerErrorMsg = "视频直链请求异常 (HTTP $code)\n请切换其他画质"
+                    }
+                } else {
+                    playerErrorMsg = "视频加载失败 (${error.errorCodeName})\n请尝试切换其他画质"
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                    playerErrorMsg = null // 加载成功时清除错误提示
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+        }
+    }
+
     // 自动退场：播放状态下 3 秒无操作自动缩回控制栏
     LaunchedEffect(isControlsVisible, isPlaying, isResolutionMenuExpanded) {
         if (isControlsVisible && isPlaying && !isResolutionMenuExpanded) {
@@ -1044,7 +1083,36 @@ fun MpvMinimalPlayer(
             modifier = Modifier.fillMaxSize()
         )
 
-        if (isBuffering) {
+        if (playerErrorMsg != null) {
+            // 在视频播放区域中央直接显示错误提示，代替黑色 0 分钟画面
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.9f))
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "加载错误",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(44.dp)
+                    )
+                    Text(
+                        text = playerErrorMsg!!,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+        } else if (isBuffering) {
             // 画面正中心显示白色加载转圈动画
             Box(
                 modifier = Modifier.fillMaxSize(),
