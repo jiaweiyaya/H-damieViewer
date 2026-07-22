@@ -807,59 +807,31 @@ fun VideoPlayerScreen(
                             .aspectRatio(playerAspectRatio)
                     ) {
                         if (!videoUrl.isNullOrEmpty()) {
-                            when (playerType) {
-                                1 -> MpvMinimalPlayer(
-                                    exoPlayer = exoPlayer,
-                                    videoUrl = videoUrl!!,
-                                    availableFormats = availableFormats,
-                                    currentResolutionName = currentResolutionName,
-                                    onResolutionSelected = onResolutionSelected,
-                                    onBackClick = onBackClick,
-                                    onHomeClick = onHomeClick,
-                                    onFullscreenClick = {
-                                        // 点击右下角全屏，旋转为横屏并隐藏系统栏
-                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                                        activity?.window?.let { win ->
-                                            val controller = androidx.core.view.WindowCompat.getInsetsController(win, win.decorView)
-                                            controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-                                            controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                                2 -> NativeMediaPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize())
-                                else -> VideoPlayer(exoPlayer = exoPlayer, modifier = Modifier.fillMaxSize())
-                            }
+                            MpvMinimalPlayer(
+                                exoPlayer = exoPlayer,
+                                videoUrl = videoUrl!!,
+                                availableFormats = availableFormats,
+                                currentResolutionName = currentResolutionName,
+                                onResolutionSelected = onResolutionSelected,
+                                onBackClick = onBackClick,
+                                onHomeClick = onHomeClick,
+                                onFullscreenClick = {
+                                    // 点击右下角全屏，旋转为横屏并隐藏系统栏
+                                    activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                    activity?.window?.let { win ->
+                                        val controller = androidx.core.view.WindowCompat.getInsetsController(win, win.decorView)
+                                        controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                                        controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
                         } else {
                             Box(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center
                             ) {
                                 CircularProgressIndicator(color = Color.White)
-                            }
-                        }
-
-                        // 只有在非“极简美化版 (MpvPlayer)”时，才在外层堆叠常驻的控制顶栏
-                        if (playerType != 1) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                IconButton(
-                                    onClick = onBackClick,
-                                    colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f))
-                                ) {
-                                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
-                                }
-                                IconButton(
-                                    onClick = onHomeClick,
-                                    colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f))
-                                ) {
-                                    Icon(imageVector = Icons.Default.Home, contentDescription = "主页", tint = Color.White)
-                                }
                             }
                         }
                     }
