@@ -59,8 +59,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -173,6 +171,26 @@ fun VideoPlayerScreen(
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
     val playerType = sharedPrefs.getInt("player_type", 0) // 去除 remember，保证每次进入实时读取最新
 
+    // 【核心修复 1】：将 ExoPlayer 的生命周期提升到最顶层管理，脱离分支，使其在旋转重绘时不受干扰
+    val exoPlayer = remember { ExoPlayer.Builder(context).build() }
+
+    // 监听播放链接，有直链时自动装载并准备播放
+    LaunchedEffect(videoUrl) {
+        if (!videoUrl.isNullOrEmpty()) {
+            val mediaItem = MediaItem.fromUri(videoUrl!!)
+            exoPlayer.setMediaItem(mediaItem)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
+        }
+    }
+
+    // 只有当整个页面彻底关闭销毁时，才释放播放器资源
+    DisposableEffect(exoPlayer) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
+
     var debugLog by remember { mutableStateOf("") }
     var showDebugDialog by remember { mutableStateOf(false) }
 
@@ -283,6 +301,7 @@ fun VideoPlayerScreen(
                 ) {
                     if (!videoUrl.isNullOrEmpty()) {
                         MpvMinimalPlayer(
+                            exoPlayer = exoPlayer,
                             videoUrl = videoUrl!!,
                             onBackClick = {
                                 // 横屏下按返回，恢复竖屏并重置系统状态栏
@@ -323,6 +342,7 @@ fun VideoPlayerScreen(
                         if (!videoUrl.isNullOrEmpty()) {
                             when (playerType) {
                                 1 -> MpvMinimalPlayer(
+                                    exoPlayer = exoPlayer,
                                     videoUrl = videoUrl!!,
                                     onBackClick = onBackClick,
                                     onHomeClick = onHomeClick,
@@ -338,7 +358,7 @@ fun VideoPlayerScreen(
                                     modifier = Modifier.fillMaxSize()
                                 )
                                 2 -> NativeMediaPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize())
-                                else -> VideoPlayer(videoUrl = videoUrl!!, modifier = Modifier.fillMaxSize())
+                                else -> VideoPlayer(exoPlayer = exoPlayer, modifier = Modifier.fillMaxSize())
                             }
                         } else {
                             Box(
@@ -528,27 +548,10 @@ fun VideoPlayerScreen(
     }
 }
 
-// ExoPlayer 核心渲染模块：自动加载直链并绑定生命周期防内存泄露
+// ExoPlayer 核心渲染模块：接受外部传入的播放器，不再自行创建/销毁
 @OptIn(UnstableApi::class)
 @Composable
-fun VideoPlayer(videoUrl: String, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-
-    val exoPlayer = remember(videoUrl) {
-        ExoPlayer.Builder(context).build().apply {
-            val mediaItem = MediaItem.fromUri(videoUrl)
-            setMediaItem(mediaItem)
-            prepare()
-            playWhenReady = true // 自动播放视频
-        }
-    }
-
-    DisposableEffect(exoPlayer) {
-        onDispose {
-            exoPlayer.release() // 释放内核资源
-        }
-    }
-
+fun VideoPlayer(exoPlayer: ExoPlayer, modifier: Modifier = Modifier) {
     AndroidView(
         factory = { ctx ->
             PlayerView(ctx).apply {
@@ -675,28 +678,16 @@ fun TagsSection(tags: List<String>, modifier: Modifier = Modifier) {
 
 // ==================== 播放器扩展内核 ====================
 
-// pages/VideoPlayerScreen.kt -> 文件底部的 MpvMinimalPlayer 函数
-
 @OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MpvMinimalPlayer(
+    exoPlayer: ExoPlayer,
     videoUrl: String,
     onBackClick: () -> Unit,
     onHomeClick: () -> Unit,
     onFullscreenClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-
-    val exoPlayer = remember(videoUrl) {
-        ExoPlayer.Builder(context).build().apply {
-            val mediaItem = MediaItem.fromUri(videoUrl)
-            setMediaItem(mediaItem)
-            prepare()
-            playWhenReady = true
-        }
-    }
-
     // 播放进度与控制栏显示状态
     var currentPosition by remember { mutableLongStateOf(0L) }
     var bufferedPosition by remember { mutableLongStateOf(0L) }
@@ -721,10 +712,6 @@ fun MpvMinimalPlayer(
             kotlinx.coroutines.delay(3000)
             isControlsVisible = false
         }
-    }
-
-    DisposableEffect(exoPlayer) {
-        onDispose { exoPlayer.release() }
     }
 
     Box(
