@@ -43,4 +43,26 @@ object IwaraAccountManager {
     fun clearUser(context: Context) {
         saveUser(context, IwaraAccount(false, "", "", "", ""))
     }
+
+    // 彻底退出登录并清理本地账号 + WebView 全部 Cookie 与 WebStorage 缓存
+    fun logoutAndClearCookies(context: Context) {
+        // 1. 清空 SharedPreferences 存储
+        clearUser(context)
+
+        // 2. 强行擦除 Android 系统 WebView Cookie（账号 Session）
+        try {
+            val cookieManager = android.webkit.CookieManager.getInstance()
+            cookieManager.removeAllCookies(null)
+            cookieManager.flush()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // 3. 清空 WebView 本地 DOM 数据库与 LocalStorage
+        try {
+            android.webkit.WebStorage.getInstance().deleteAllData()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 }

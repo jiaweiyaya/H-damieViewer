@@ -35,7 +35,8 @@ fun MainDrawerSheet(
     onNavigateToSettings: () -> Unit,
     onNavigateToAbout: () -> Unit,
     onCheckUpdate: () -> Unit,
-    onOpenIwaraLogin: () -> Unit
+    onOpenIwaraLogin: () -> Unit,
+    onLogoutIwara: () -> Unit
 ) {
     ModalDrawerSheet(
         modifier = Modifier.width(320.dp),
@@ -193,6 +194,24 @@ fun MainDrawerSheet(
                                 modifier = Modifier.padding(vertical = 4.dp)
                             )
                         }
+                    }
+
+                    // 👈【新增】：已登录时，在卡片右上角显示红色的"退出登录"
+                    if (iwaraAccount.isLoggedIn) {
+                        Text(
+                            text = "退出登录",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(12.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    onLogoutIwara()
+                                }
+                                .padding(4.dp)
+                        )
                     }
 
                     // 重新登录 / 登录按钮

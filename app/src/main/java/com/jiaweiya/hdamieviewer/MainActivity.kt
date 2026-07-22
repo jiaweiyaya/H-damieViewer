@@ -304,6 +304,13 @@ class MainActivity : ComponentActivity() {
                             },
                             onOpenIwaraLogin = {
                                 showIwaraLoginDialog = true
+                            },
+                            onLogoutIwara = {
+                                // 1. 彻底擦除账号数据与 WebView Cookie
+                                IwaraAccountManager.logoutAndClearCookies(context)
+                                // 2. 重新加载为空账号，侧边栏卡片秒变"未登录"
+                                iwaraAccount = IwaraAccountManager.loadUser(context)
+                                Toast.makeText(context, "已退出登录并清除网页缓存", Toast.LENGTH_SHORT).show()
                             }
                         )
                     }
