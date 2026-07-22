@@ -125,6 +125,7 @@ fun SettingsPage(
     onNavigateToAbout: () -> Unit,
     playerType: Int,
     onPlayerTypeChange: (Int) -> Unit,
+    onNavigateToFullscreenMarginSettings: () -> Unit, // 👈 新增此参数
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -154,6 +155,10 @@ fun SettingsPage(
     }
 
     val themeOptions = listOf("跟随系统", "浅色模式", "深色模式")
+
+    val isSystemDark = isSystemInDarkTheme()
+    val isAppDark = themeMode == 2 || (themeMode == 0 && isSystemDark)
+    val activeColorOptions = if (isAppDark) darkColorOptions else colorOptions
 
     Scaffold(
         topBar = {
@@ -239,7 +244,7 @@ fun SettingsPage(
                                     .fillMaxSize()
                                     .padding(3.dp)
                                     .clip(RoundedCornerShape(3.dp))
-                                    .background(Color(themeColor))
+                                    .background(Color(resolveThemeColor(themeColor, isAppDark)))
                             )
                         }
                     }
@@ -283,7 +288,25 @@ fun SettingsPage(
                     // 应用图标切换配置栏
                     AppIconSettingsRow(onOpenDialog = { showAppIconDialog = true })
 
-                    // 播放器选择 Row（已正确移动到第一分区内部，不再直接暴露在 LazyColumn 作用域中）
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+            }
+
+            // 2. 新增："视频播放"分区
+            item {
+                ScrollFadeIn {
+                    Text(
+                        text = "视频播放",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
+                    )
+
+                    // 移动过来的：播放器选择
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -308,6 +331,20 @@ fun SettingsPage(
                         }
                     }
 
+                    // 新增入口：全屏屏幕边距调整
+                    SettingsRow(
+                        title = "全屏屏幕边距调整",
+                        subtitle = "适配挖孔屏与屏幕圆角遮挡",
+                        onClick = onNavigateToFullscreenMarginSettings,
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "进入",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
+
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                         modifier = Modifier.padding(horizontal = 16.dp)
@@ -315,7 +352,7 @@ fun SettingsPage(
                 }
             }
 
-            // 2. 应用更新分区
+            // 3. 应用更新分区
             item {
                 ScrollFadeIn {
                     Text(
@@ -398,7 +435,7 @@ fun SettingsPage(
                 }
             }
 
-            // 3. 其他分区
+            // 4. 其他分区
             item {
                 ScrollFadeIn {
                     Text(
@@ -470,13 +507,9 @@ fun SettingsPage(
         }
     }
 
-    val isSystemDark = isSystemInDarkTheme()
-    val isAppDark = themeMode == 2 || (themeMode == 0 && isSystemDark)
-    val activeColorOptions = if (isAppDark) darkColorOptions else colorOptions
-
     if (showThemeColorDialog) {
         ColorSelectionDialog(
-            currentColor = themeColor,
+            currentColor = resolveThemeColor(themeColor, isAppDark),
             colorOptions = activeColorOptions,
             onDismiss = { showThemeColorDialog = false },
             onSave = {

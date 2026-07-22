@@ -117,7 +117,7 @@ data class IwaraMedia(
 suspend fun fetchIwaraVideos(): List<IwaraMedia> {
     return withContext(Dispatchers.IO) {
         try {
-            val url = URL("https://api.iwara.tv/videos?sort=trending&limit=5&rating=all")
+            val url = URL("https://api.iwara.tv/videos?sort=trending&page=0&limit=5")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.connectTimeout = 8000
@@ -192,6 +192,13 @@ fun formatCount(count: Int): String {
     }
 }
 
+// ==================== 全局内存缓存（避免从播放页返回时重复加载） ====================
+
+object HomeMediaCache {
+    var cachedVideos: List<IwaraMedia>? = null
+    var cachedImages: List<IwaraMedia>? = null
+}
+
 // ==================== UI 呈现页面 ====================
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -206,28 +213,33 @@ fun HomeScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    // API 数据流状态管理
-    var popularVideos by remember { mutableStateOf<List<IwaraMedia>>(emptyList()) }
-    var popularImages by remember { mutableStateOf<List<IwaraMedia>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+    // API 数据流状态管理（优先从 HomeMediaCache 读取缓存）
+    var popularVideos by remember { mutableStateOf<List<IwaraMedia>>(HomeMediaCache.cachedVideos ?: emptyList()) }
+    var popularImages by remember { mutableStateOf<List<IwaraMedia>>(HomeMediaCache.cachedImages ?: emptyList()) }
+    var isLoading by remember { mutableStateOf(HomeMediaCache.cachedVideos == null) }
 
     // 搜索状态管理
     var isSearchActive by remember { mutableStateOf(false) }
     var searchText by remember { mutableStateOf("") }
     var isRefreshing by remember { mutableStateOf(false) }
 
-    // 初次加载生命周期
+    // 初次加载生命周期（仅当缓存为空即应用刚启动时才请求网络）
     LaunchedEffect(Unit) {
-        isLoading = true
-        try {
-            val videos = fetchIwaraVideos()
-            val images = fetchIwaraImages()
-            popularVideos = videos
-            popularImages = images
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            isLoading = false
+        if (HomeMediaCache.cachedVideos == null || HomeMediaCache.cachedImages == null) {
+            isLoading = true
+            try {
+                val videos = fetchIwaraVideos()
+                val images = fetchIwaraImages()
+                popularVideos = videos
+                popularImages = images
+                // 写入缓存
+                HomeMediaCache.cachedVideos = videos
+                HomeMediaCache.cachedImages = images
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isLoading = false
+            }
         }
     }
 
@@ -284,6 +296,9 @@ fun HomeScreen(
                                     val images = fetchIwaraImages()
                                     popularVideos = videos
                                     popularImages = images
+                                    // 下拉刷新时同步更新缓存
+                                    HomeMediaCache.cachedVideos = videos
+                                    HomeMediaCache.cachedImages = images
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 } finally {

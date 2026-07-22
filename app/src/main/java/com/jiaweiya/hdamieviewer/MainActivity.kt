@@ -12,6 +12,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.animateDpAsState
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -41,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
@@ -51,6 +53,7 @@ import com.google.gson.reflect.TypeToken
 import com.jiaweiya.hdamieviewer.pages.AboutPage
 import com.jiaweiya.hdamieviewer.pages.BackupCrypto
 import com.jiaweiya.hdamieviewer.pages.BackupData
+import com.jiaweiya.hdamieviewer.pages.FullscreenMarginSettingsPage
 import com.jiaweiya.hdamieviewer.pages.ExportBackupScreen
 import com.jiaweiya.hdamieviewer.pages.HomeScreen
 import com.jiaweiya.hdamieviewer.pages.ImportBackupScreen
@@ -190,6 +193,10 @@ class MainActivity : ComponentActivity() {
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
 
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentRoute = navBackStackEntry?.destination?.route
+                val isHomeRoute = currentRoute == "Home"
+
                 val currentAppVersion = remember {
                     try {
                         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
@@ -255,13 +262,19 @@ class MainActivity : ComponentActivity() {
                     coroutineScope.launch { drawerState.close() }
                 }
 
-                val blurRadius by animateDpAsState(
-                    targetValue = if (drawerState.targetValue == DrawerValue.Open) 16.dp else 0.dp,
-                    label = "drawer_blur"
-                )
+                // 侧边栏跟随手指滑动渐变模糊
+                val density = LocalDensity.current
+                val maxDrawerOffsetPx = with(density) { 320.dp.toPx() }
+                val blurProgress = remember(drawerState.offset.value) {
+                    if (maxDrawerOffsetPx > 0f) {
+                        ((maxDrawerOffsetPx + drawerState.offset.value) / maxDrawerOffsetPx).coerceIn(0f, 1f)
+                    } else 0f
+                }
+                val blurRadius = (blurProgress * 16f).dp
 
                 ModalNavigationDrawer(
                     drawerState = drawerState,
+                    gesturesEnabled = isHomeRoute, // 👈 仅在主页允许右滑手势展开侧边栏
                     drawerContent = {
                         MainDrawerSheet(
                             onCloseDrawer = { coroutineScope.launch { drawerState.close() } },
@@ -344,7 +357,10 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToAbout = { navController.navigate("About") },
                                     onBackClick = { navController.popBackStack() },
                                     playerType = playerType,
-                                    onPlayerTypeChange = { playerType = it }
+                                    onPlayerTypeChange = { playerType = it },
+                                    onNavigateToFullscreenMarginSettings = {
+                                        navController.navigate("FullscreenMarginSettings")
+                                    }
                                 )
                             }
 
@@ -354,6 +370,17 @@ class MainActivity : ComponentActivity() {
                                 popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Down, animationSpec = tween(400)) }
                             ) {
                                 AboutPage(onBackClick = { navController.popBackStack() })
+                            }
+
+                            // 全屏屏幕边距调整页面路由
+                            composable(
+                                route = "FullscreenMarginSettings",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                FullscreenMarginSettingsPage(
+                                    onBackClick = { navController.popBackStack() }
+                                )
                             }
 
                             composable(
