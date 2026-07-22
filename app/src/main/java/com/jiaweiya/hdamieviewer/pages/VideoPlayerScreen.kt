@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -71,26 +70,17 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.text.style.TextAlign
 import java.security.MessageDigest
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.border
-import androidx.compose.material.icons.filled.HighQuality
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
-import androidx.compose.ui.unit.IntOffset
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.compose.animation.expandIn
-import androidx.compose.animation.shrinkOut
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.ui.input.pointer.changedToUp
+import com.jiaweiya.hdamieviewer.iwara.DownloadedVideoDb
+import com.jiaweiya.hdamieviewer.iwara.IwaraDownloadManager
 
 // ==================== Iwara 详情 API 专属数据模型 ====================
 
@@ -524,7 +514,8 @@ fun executeFollowViaWebView(
 fun VideoPlayerScreen(
     videoId: String,
     onBackClick: () -> Unit,
-    onHomeClick: () -> Unit
+    onHomeClick: () -> Unit,
+    onNavigateToSearchResults: (query: String, type: String, sort: String) -> Unit
 ) {
     var videoDetail by remember { mutableStateOf<IwaraVideoDetail?>(null) }
     var videoUrl by remember { mutableStateOf<String?>(null) }
@@ -543,6 +534,7 @@ fun VideoPlayerScreen(
     // 定义动态点赞与关注状态
     var isLiked by remember { mutableStateOf(false) }
     var isFollowing by remember { mutableStateOf(false) }
+    var showDownloadDialog by remember { mutableStateOf(false) }
 
     // 监听 videoDetail 获取后，同步初始点赞与关注状态
     LaunchedEffect(videoDetail) {
@@ -999,12 +991,12 @@ fun VideoPlayerScreen(
                             }
                         )
 
-                        // 3. 下载 按钮 (暂不实装)
+                        // 3. 下载 按钮
                         ActionButton(
                             icon = Icons.Default.Download,
                             label = "下载",
                             onClick = {
-                                android.widget.Toast.makeText(context, "下载功能暂未实装", android.widget.Toast.LENGTH_SHORT).show()
+                                showDownloadDialog = true
                             }
                         )
 
@@ -1027,6 +1019,9 @@ fun VideoPlayerScreen(
                     if (videoTags.isNotEmpty()) {
                         TagsSection(
                             tags = videoTags,
+                            onTagClick = { tag ->
+                                onNavigateToSearchResults(tag, "videos", "relevance")
+                            },
                             modifier = Modifier.padding(horizontal = 16.dp)
                         )
                     }
@@ -1141,6 +1136,18 @@ fun VideoPlayerScreen(
             .size(1.dp)
             .graphicsLayer { alpha = 0f } // 100% 透明隐藏
     )
+
+    if (showDownloadDialog) {
+        VideoDownloadDialog(
+            videoId = videoId,
+            videoTitle = videoDetail?.title ?: "Iwara视频",
+            availableFormats = availableFormats,
+            onDismissRequest = { showDownloadDialog = false },
+            authorName = videoDetail?.user?.name ?: videoDetail?.user?.username ?: "",
+            videoTags = videoDetail?.tags?.map { it.id } ?: emptyList(),
+            videoDescription = videoDetail?.body ?: ""
+        )
+    }
 }
 
 // ExoPlayer 核心渲染模块：接受外部传入的播放器，不再自行创建/销毁
@@ -1249,7 +1256,7 @@ fun ActionButton(
 // 3. 标签栏：最大 2 行自适应展开折叠
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun TagsSection(tags: List<String>, modifier: Modifier = Modifier) {
+fun TagsSection(tags: List<String>, onTagClick: ((String) -> Unit)? = null, modifier: Modifier = Modifier) {
     var isExpanded by remember { mutableStateOf(false) }
     var hasMoreThanTwoRows by remember { mutableStateOf(false) }
     val density = LocalDensity.current
@@ -1276,7 +1283,7 @@ fun TagsSection(tags: List<String>, modifier: Modifier = Modifier) {
         ) {
             tags.forEach { tag ->
                 SuggestionChip(
-                    onClick = {},
+                    onClick = { onTagClick?.invoke(tag) },
                     label = { Text(tag, fontSize = 12.sp) },
                     shape = RoundedCornerShape(8.dp),
                     colors = SuggestionChipDefaults.suggestionChipColors(
@@ -2038,6 +2045,164 @@ fun NativeMediaPlayer(videoUrl: String, modifier: Modifier = Modifier) {
             }
         },
         modifier = modifier
+    )
+}
+
+@Composable
+fun VideoDownloadDialog(
+    videoId: String,
+    videoTitle: String,
+    availableFormats: List<IwaraVideoFormat>,
+    onDismissRequest: () -> Unit,
+    authorName: String = "",
+    videoTags: List<String> = emptyList(),
+    videoDescription: String = ""
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // 👈 核心修复：打开弹窗时立刻重新盘点磁盘真实文件，保证数据 100% 同步！
+    val downloadedRecords = remember { DownloadedVideoDb.rescanDirectory(context) }
+
+    // 勾选状态记录：默认全不选，或者只选第一个
+    var selectedFormats by remember { mutableStateOf(setOf<String>()) }
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text("下载视频", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (availableFormats.isEmpty()) {
+                    Text("暂无有效的分辨率可供下载", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                } else {
+                    availableFormats.forEach { format ->
+                        val resName = format.name ?: "未知分辨率"
+                        val taskKey = "$videoId-$resName"
+                        val taskState = IwaraDownloadManager.taskMap[taskKey]
+
+                        val dbRecord = downloadedRecords.find { it.videoId == videoId && it.resolution == resName }
+                        val isDbExist = dbRecord != null
+
+                        val isCompleted = (taskState?.isCompleted == true) || isDbExist
+                        val isDownloading = taskState?.isDownloading == true && !isCompleted
+                        val progress = taskState?.progress ?: 0f
+                        val speed = taskState?.speedBytesPerSec ?: 0L
+
+                        val isChecked = selectedFormats.contains(resName)
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                                .padding(12.dp)
+                        ) {
+                            // 行首：分辨率名称；行尾：复选框
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedFormats = if (isChecked) {
+                                            selectedFormats - resName
+                                        } else {
+                                            selectedFormats + resName
+                                        }
+                                    },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = resName,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Checkbox(
+                                    checked = isChecked || isDownloading || isCompleted,
+                                    enabled = !isDownloading && !isCompleted, // 已开始或已完成禁用复选框
+                                    onCheckedChange = { checked ->
+                                        selectedFormats = if (checked) selectedFormats + resName else selectedFormats - resName
+                                    }
+                                )
+                            }
+
+                            // 行下方：进度条 + 网速 / 已下载文本
+                            if (isDownloading || isCompleted) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    LinearProgressIndicator(
+                                        progress = { if (isCompleted) 1f else progress },
+                                        modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp))
+                                    )
+                                    Text(
+                                        text = if (isCompleted) "已下载" else IwaraDownloadManager.formatSpeed(speed),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    // 开启选中的分辨率下载
+                    availableFormats.filter { selectedFormats.contains(it.name) }.forEach { format ->
+                        val resName = format.name ?: "Source"
+                        val rawUrl = format.src?.download ?: format.src?.view ?: ""
+                        val finalUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
+
+                        if (finalUrl.isNotEmpty()) {
+                            IwaraDownloadManager.startDownload(
+                                context = context,
+                                scope = coroutineScope,
+                                videoId = videoId,
+                                videoTitle = videoTitle,
+                                resolutionName = resName,
+                                urlStr = finalUrl,
+                                authorName = authorName,
+                                videoTags = videoTags,
+                                videoDescription = videoDescription
+                            )
+                        }
+                    }
+                },
+                enabled = selectedFormats.isNotEmpty(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("下载")
+            }
+        },
+        dismissButton = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 左下角：隐藏到后台按钮
+                TextButton(onClick = onDismissRequest) {
+                    Text("隐藏到后台", color = MaterialTheme.colorScheme.secondary)
+                }
+
+                // 右下角：“下载”左边的“取消”按钮
+                TextButton(onClick = onDismissRequest) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
     )
 }
 

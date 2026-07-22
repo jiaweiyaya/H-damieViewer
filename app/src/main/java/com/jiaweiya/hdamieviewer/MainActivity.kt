@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import com.jiaweiya.hdamieviewer.pages.resolveThemeColor
 import androidx.navigation.navArgument
 import androidx.navigation.NavType
+import com.jiaweiya.hdamieviewer.pages.DownloadManagerScreen
 import com.jiaweiya.hdamieviewer.pages.VideoPlayerScreen
 
 data class GithubRelease(
@@ -311,6 +312,9 @@ class MainActivity : ComponentActivity() {
                                 // 2. 重新加载为空账号，侧边栏卡片秒变"未登录"
                                 iwaraAccount = IwaraAccountManager.loadUser(context)
                                 Toast.makeText(context, "已退出登录并清除网页缓存", Toast.LENGTH_SHORT).show()
+                            },
+                            onNavigateToDownloadManager = {
+                                navController.navigate("DownloadManager")
                             }
                         )
                     }
@@ -489,6 +493,25 @@ class MainActivity : ComponentActivity() {
                                         navController.navigate("Home") {
                                             popUpTo("Home") { inclusive = true }
                                         }
+                                    },
+                                    onNavigateToSearchResults = { query, type, sort ->
+                                        navController.navigate("SearchResults/$query/$type/$sort")
+                                    }
+                                )
+                            }
+
+                            // 下载管理路由（放在 NavHost 内部）
+                            composable(
+                                route = "DownloadManager",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                exitTransition = { scaleOut(targetScale = 0.9f, animationSpec = tween(400)) + fadeOut(animationSpec = tween(400)) },
+                                popEnterTransition = { scaleIn(initialScale = 0.9f, animationSpec = tween(400)) + fadeIn(animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                DownloadManagerScreen(
+                                    onBackClick = { navController.popBackStack() },
+                                    onVideoClick = { videoId ->
+                                        navController.navigate("Player/$videoId")
                                     }
                                 )
                             }

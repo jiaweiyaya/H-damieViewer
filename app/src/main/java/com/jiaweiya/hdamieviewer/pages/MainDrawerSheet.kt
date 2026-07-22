@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -36,7 +37,8 @@ fun MainDrawerSheet(
     onNavigateToAbout: () -> Unit,
     onCheckUpdate: () -> Unit,
     onOpenIwaraLogin: () -> Unit,
-    onLogoutIwara: () -> Unit
+    onLogoutIwara: () -> Unit,
+    onNavigateToDownloadManager: () -> Unit
 ) {
     ModalDrawerSheet(
         modifier = Modifier.width(320.dp),
@@ -235,7 +237,7 @@ fun MainDrawerSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // 快捷菜单按钮区
+            // 第一排：设置 + 关于
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -256,6 +258,24 @@ fun MainDrawerSheet(
                 ) {
                     onCloseDrawer()
                     onNavigateToAbout()
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // 第二排：独立一行展示“下载管理” 👈
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+            ) {
+                DrawerMenuItem(
+                    icon = Icons.Default.DownloadDone,
+                    text = "下载管理",
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    onCloseDrawer()
+                    onNavigateToDownloadManager()
                 }
             }
 

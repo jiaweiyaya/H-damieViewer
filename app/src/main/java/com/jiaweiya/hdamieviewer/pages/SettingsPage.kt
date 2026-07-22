@@ -59,6 +59,13 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import java.io.File
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.provider.Settings
+import android.net.Uri
+import android.os.Environment
+import com.jiaweiya.hdamieviewer.iwara.DownloadedVideoDb
 
 // 补回缺少的常量及转换函数
 val colorOptions = listOf(
@@ -143,6 +150,8 @@ fun SettingsPage(
     val focusManager = LocalFocusManager.current
 
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
+    var showPathDialog by remember { mutableStateOf(false) }
+    var activeDownloadPath by remember { mutableStateOf(DownloadedVideoDb.getActiveDownloadDir(context).absolutePath) }
     var longPressSpeed by remember { mutableFloatStateOf(sharedPrefs.getFloat("long_press_speed", 2.0f)) }
     var vibrationDuration by remember { mutableIntStateOf(sharedPrefs.getInt("vibration_duration", 50)) }
     var showSpeedCustomDialog by remember { mutableStateOf(false) }
@@ -451,7 +460,37 @@ fun SettingsPage(
                 }
             }
 
-            // 4. 应用更新分区
+            // 下载路径分区
+            item {
+                ScrollFadeIn {
+                    Text(
+                        text = "下载路径",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
+                    )
+
+                    SettingsRow(
+                        title = "视频",
+                        subtitle = activeDownloadPath,
+                        onClick = { showPathDialog = true },
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+            }
+
+            // 5. 应用更新分区
             item {
                 ScrollFadeIn {
                     Text(
@@ -714,6 +753,19 @@ fun SettingsPage(
                 vibrationDuration = newDuration
                 sharedPrefs.edit().putInt("vibration_duration", newDuration).apply()
                 showVibrationDialog = false
+            }
+        )
+    }
+
+    if (showPathDialog) {
+        DownloadPathDialog(
+            currentPath = activeDownloadPath,
+            onDismiss = { showPathDialog = false },
+            onSave = { newPath ->
+                activeDownloadPath = newPath
+                DownloadedVideoDb.saveCustomDownloadPath(context, newPath)
+                showPathDialog = false
+                Toast.makeText(context, "下载路径已更新", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -1941,4 +1993,150 @@ fun CustomSpeedSettingsDialog(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DownloadPathDialog(
+    currentPath: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var inputPath by remember { mutableStateOf(currentPath) }
+
+    // 检查 Android 11+ 是否具备所有文件访问权限，若无则跳转系统授权页
+    fun checkPermissionAndLaunch(picker: () -> Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                Toast.makeText(context, "自定义外部保存路径需要授予【所有文件访问权限】", Toast.LENGTH_LONG).show()
+                try {
+                    val intent = android.content.Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    val intent = android.content.Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    context.startActivity(intent)
+                }
+                return
+            }
+        }
+        picker()
+    }
+
+    // SAF 目录选择器
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val rawPath = uri.path ?: ""
+            val formattedPath = if (rawPath.contains(":")) {
+                val relativePath = rawPath.substringAfter(":")
+                if (relativePath.startsWith("/")) "/storage/emulated/0$relativePath"
+                else "/storage/emulated/0/$relativePath"
+            } else rawPath
+
+            inputPath = formattedPath
+        }
+    }
+
+    // 检查目标目录非空状态
+    val isNotEmpty = remember(inputPath) {
+        try {
+            val file = File(inputPath)
+            file.exists() && file.isDirectory && !file.listFiles().isNullOrEmpty()
+        } catch (e: Exception) { false }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("视频下载路径配置", fontWeight = FontWeight.Bold)
+
+                // 红色警告标语 1：非空目录警告
+                if (isNotEmpty) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "警告：所选目录不为空，请注意文件管理！",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                // 红色警告标语 2：文件自动移动告知
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "警告：确认修改后，原目录中的所有已下载视频将自动移动至新目录！",
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = inputPath,
+                    onValueChange = { inputPath = it },
+                    label = { Text("视频保存绝对路径") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            checkPermissionAndLaunch { folderPicker.launch(null) }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = "选择目录",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val oldDir = DownloadedVideoDb.getActiveDownloadDir(context)
+                    val newDir = File(inputPath)
+
+                    if (!newDir.exists()) {
+                        newDir.mkdirs()
+                    }
+
+                    // 1. 保存新路径
+                    onSave(newDir.absolutePath)
+
+                    // 2. 开启协程在后台将原目录的文件全量平滑移动至新目录
+                    coroutineScope.launch(Dispatchers.IO) {
+                        DownloadedVideoDb.moveFilesToNewDir(context, oldDir, newDir)
+                    }
+                },
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("确认")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(
+                    onClick = {
+                        inputPath = DownloadedVideoDb.getDefaultDownloadDir(context).absolutePath
+                    }
+                ) {
+                    Text("恢复默认", color = MaterialTheme.colorScheme.secondary)
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    )
 }
