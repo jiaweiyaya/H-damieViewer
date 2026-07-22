@@ -65,6 +65,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.filled.Replay
 
 // ==================== Iwara 详情 API 专属数据模型 ====================
 
@@ -571,36 +572,64 @@ fun ExpandableDescription(text: String, modifier: Modifier = Modifier) {
     var isExpanded by remember { mutableStateOf(false) }
     var hasOverflow by remember { mutableStateOf(false) }
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .animateContentSize()
+            .animateContentSize() // 平滑拉伸动画
     ) {
-        Text(
-            text = text,
-            maxLines = if (isExpanded) Int.MAX_VALUE else 3,
-            overflow = TextOverflow.Ellipsis,
-            onTextLayout = { hasOverflow = it.hasVisualOverflow },
-            fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            lineHeight = 20.sp,
-            modifier = Modifier
-                .padding(end = if (hasOverflow && !isExpanded) 48.dp else 0.dp)
-                .clickable { if (isExpanded) isExpanded = false }
-        )
-
-        if (hasOverflow && !isExpanded) {
+        Box(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = "展开",
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
+                text = text,
+                maxLines = if (isExpanded) Int.MAX_VALUE else 3,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = {
+                    // 仅在收起状态下测量是否溢出，防止展开后溢出状态消失导致按钮闪烁
+                    if (!isExpanded) {
+                        hasOverflow = it.hasVisualOverflow
+                    }
+                },
                 fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 20.sp,
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .background(MaterialTheme.colorScheme.background)
-                    .clickable { isExpanded = true }
-                    .padding(start = 4.dp)
+                    .padding(end = if (hasOverflow && !isExpanded) 48.dp else 0.dp) // 收起且溢出时，为“展开”键留出 48.dp 空间
+                    .clickable { if (isExpanded) isExpanded = false }
             )
+
+            // 收起状态下的“展开”按键（嵌入在第三行行末）
+            if (hasOverflow && !isExpanded) {
+                Text(
+                    text = "展开",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .background(MaterialTheme.colorScheme.background)
+                        .clickable { isExpanded = true }
+                        .padding(start = 4.dp)
+                )
+            }
+        }
+
+        // 【新增】：如果处于展开状态，在文本最后一行的“下一行”的“右侧”显示一个“折叠”按钮
+        if (isExpanded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp), // 留出一点上行边距，代表“下一行”
+                contentAlignment = Alignment.CenterEnd // 居右对齐
+            ) {
+                Text(
+                    text = "折叠",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .clickable { isExpanded = false }
+                        .padding(start = 8.dp, top = 4.dp, bottom = 4.dp)
+                )
+            }
         }
     }
 }
@@ -694,6 +723,8 @@ fun MpvMinimalPlayer(
     var duration by remember { mutableLongStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
     var isControlsVisible by remember { mutableStateOf(true) }
+    var isBuffering by remember { mutableStateOf(false) }
+    var isEnded by remember { mutableStateOf(false) }
 
     // 进度轮询监听
     LaunchedEffect(exoPlayer) {
@@ -702,6 +733,8 @@ fun MpvMinimalPlayer(
             bufferedPosition = exoPlayer.bufferedPosition
             duration = exoPlayer.duration.coerceAtLeast(0L)
             isPlaying = exoPlayer.isPlaying
+            isBuffering = exoPlayer.playbackState == 2
+            isEnded = exoPlayer.playbackState == 4
             kotlinx.coroutines.delay(250) // 250 毫秒高频刷新细进度条，获得最佳拖动回馈
         }
     }
@@ -711,6 +744,12 @@ fun MpvMinimalPlayer(
         if (isControlsVisible && isPlaying) {
             kotlinx.coroutines.delay(3000)
             isControlsVisible = false
+        }
+    }
+
+    LaunchedEffect(isEnded) {
+        if (isEnded) {
+            isControlsVisible = true
         }
     }
 
@@ -734,6 +773,49 @@ fun MpvMinimalPlayer(
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        if (isBuffering) {
+            // 画面正中心显示白色加载转圈动画
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(44.dp),
+                    color = Color.White,
+                    strokeWidth = 3.dp
+                )
+            }
+        } else if (isEnded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        // 【空白点击】：仅作拦截，防止点击边缘时意外隐藏控制条或引发多余穿透
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                IconButton(
+                    onClick = {
+                        // 【唯一触发点】：只有点击中心这个重播按钮，才会重新播放视频
+                        exoPlayer.seekTo(0L)
+                        exoPlayer.play()
+                    },
+                    modifier = Modifier.size(64.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Replay,
+                        contentDescription = "重新播放",
+                        tint = Color.White,
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+            }
+        }
 
         // Bilibili 风格的高级 Compose 自定义悬浮控制面板
         AnimatedVisibility(
@@ -762,7 +844,7 @@ fun MpvMinimalPlayer(
                     ) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(5.dp))
                     IconButton(
                         onClick = onHomeClick,
                         modifier = Modifier.size(36.dp)
@@ -787,22 +869,32 @@ fun MpvMinimalPlayer(
                     // 左下角：紧凑的播放暂停控制
                     IconButton(
                         onClick = {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                            isPlaying = exoPlayer.isPlaying
+                            if (!isBuffering) { // 缓冲时点击不响应，防止卡死
+                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                                isPlaying = exoPlayer.isPlaying
+                            }
                         },
                         modifier = Modifier.size(36.dp)
                     ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = "播放暂停",
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        if (isBuffering) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp // 小巧的转圈
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = "播放暂停",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(4.dp))
 
-// 中间：【完美还原 Bilibili】超细轨加极小滑块的进度条
+                    // 中间：【完美还原 Bilibili】超细轨加极小滑块的进度条
                     var widthPx by remember { mutableIntStateOf(0) } // 实时测量滚动条物理宽度
                     val density = LocalDensity.current
 
