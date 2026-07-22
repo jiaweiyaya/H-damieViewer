@@ -16,7 +16,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -99,9 +101,11 @@ data class IwaraDetailAvatar(
 )
 
 data class IwaraDetailUser(
+    val id: String?,
     val name: String?,
     val username: String?,
-    val avatar: IwaraDetailAvatar?
+    val avatar: IwaraDetailAvatar?,
+    val following: Boolean? = false
 )
 
 data class IwaraVideoDetail(
@@ -113,8 +117,14 @@ data class IwaraVideoDetail(
     val createdAt: String?,
     val tags: List<IwaraTagDetail>?,
     val user: IwaraDetailUser?,
-    val fileUrl: String? // 直链解析接口
+    val fileUrl: String?, // 直链解析接口
+    val liked: Boolean? = false
 )
+
+// 顶层动作回调处理器
+object IwaraActionHandler {
+    var onActionResult: ((action: String, success: Boolean, log: String) -> Unit)? = null
+}
 
 data class IwaraFileSource(
     val view: String?,
@@ -150,13 +160,24 @@ suspend fun fetchVideoDetail(videoId: String): IwaraVideoDetail? {
     }
 }
 
-// 修改后的详情请求函数：同时返回视频详情和 HTTP 状态码
-suspend fun fetchVideoDetailResult(videoId: String): Pair<IwaraVideoDetail?, Int> {
+// 升级版：带 Token 的详情请求，每次进入视频自动同步真实点赞/关注状态
+suspend fun fetchVideoDetailResult(videoId: String, token: String = ""): Pair<IwaraVideoDetail?, Int> {
     return withContext(Dispatchers.IO) {
         try {
             val url = URL("https://api.iwara.tv/video/$videoId")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
+
+            // 👈 核心修复：带有 Token 时，i 站会返回当前用户的 liked 和 following 真实状态！
+            if (token.isNotEmpty()) {
+                connection.setRequestProperty("Authorization", "Bearer $token")
+            }
+
+            val cookie = android.webkit.CookieManager.getInstance().getCookie("https://www.iwara.tv")
+            if (!cookie.isNullOrEmpty()) {
+                connection.setRequestProperty("Cookie", cookie)
+            }
+
             connection.connectTimeout = 8000
             connection.readTimeout = 8000
             val responseCode = connection.responseCode
@@ -202,6 +223,296 @@ suspend fun fetchVideoFormats(fileUrl: String): List<IwaraVideoFormat> {
     }
 }
 
+// 带调试日志的点赞/取消赞请求
+suspend fun toggleLikeVideoWithLog(videoId: String, isLikedNow: Boolean, token: String): Pair<Boolean, String> {
+    return withContext(Dispatchers.IO) {
+        val log = StringBuilder()
+        log.append("=== 【点赞 API 调试信息】 ===\n")
+        log.append("• 目标视频 ID: $videoId\n")
+        log.append("• 操作动作: ${if (isLikedNow) "取消点赞 (DELETE)" else "进行点赞 (POST)"}\n")
+
+        try {
+            val url = URL("https://api.iwara.tv/video/$videoId/like")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = if (isLikedNow) "DELETE" else "POST"
+
+            // 1. 注入与 WebView 100% 一致的完整 Chrome User-Agent，绕过 Cloudflare 防火墙
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            connection.setRequestProperty("Accept", "application/json, text/plain, */*")
+            connection.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            connection.setRequestProperty("Origin", "https://www.iwara.tv")
+            connection.setRequestProperty("Referer", "https://www.iwara.tv/")
+            connection.setRequestProperty("Content-Type", "application/json")
+
+            // 2. 注入 Bearer Token
+            if (token.isNotEmpty()) {
+                connection.setRequestProperty("Authorization", "Bearer $token")
+            }
+
+            // 3. 提取并合并 www.iwara.tv 与 api.iwara.tv 的全部 Cookie（包含 Cloudflare 过关盾 cf_clearance）
+            val cookieManager = android.webkit.CookieManager.getInstance()
+            val cookie1 = cookieManager.getCookie("https://www.iwara.tv") ?: ""
+            val cookie2 = cookieManager.getCookie("https://api.iwara.tv") ?: ""
+            val mergedCookie = listOf(cookie1, cookie2).filter { it.isNotEmpty() }.joinToString("; ")
+            if (mergedCookie.isNotEmpty()) {
+                connection.setRequestProperty("Cookie", mergedCookie)
+            }
+
+            if (!isLikedNow) {
+                connection.doOutput = true
+                connection.setFixedLengthStreamingMode(0) // 空 Body POST
+            }
+
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
+
+            val code = connection.responseCode
+            val msg = connection.responseMessage
+            log.append("• HTTP 响应码: $code ($msg)\n")
+
+            val responseText = try {
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.readText() ?: "空响应体"
+            } catch (e: Exception) {
+                "读取响应体失败: ${e.localizedMessage}"
+            }
+
+            log.append("• 服务器返回报文:\n$responseText\n\n")
+            Pair(code in 200..299, log.toString())
+        } catch (e: Exception) {
+            log.append("❌ 网络请求异常: ${e.localizedMessage ?: e.message}\n\n")
+            Pair(false, log.toString())
+        }
+    }
+}
+
+suspend fun toggleFollowUserWithLog(userId: String, isFollowingNow: Boolean, token: String): Pair<Boolean, String> {
+    return withContext(Dispatchers.IO) {
+        val log = StringBuilder()
+        log.append("=== 【关注作者 API 调试信息】 ===\n")
+        log.append("• 目标作者 ID: $userId\n")
+        log.append("• 操作动作: ${if (isFollowingNow) "取消关注 (DELETE)" else "进行关注 (POST)"}\n")
+
+        try {
+            val url = URL("https://api.iwara.tv/user/$userId/following")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = if (isFollowingNow) "DELETE" else "POST"
+
+            // 1. 注入完整标头伪装
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            connection.setRequestProperty("Accept", "application/json, text/plain, */*")
+            connection.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            connection.setRequestProperty("Origin", "https://www.iwara.tv")
+            connection.setRequestProperty("Referer", "https://www.iwara.tv/")
+            connection.setRequestProperty("Content-Type", "application/json")
+
+            // 2. 注入 Token
+            if (token.isNotEmpty()) {
+                connection.setRequestProperty("Authorization", "Bearer $token")
+            }
+
+            // 3. 提取全域 Cookie
+            val cookieManager = android.webkit.CookieManager.getInstance()
+            val cookie1 = cookieManager.getCookie("https://www.iwara.tv") ?: ""
+            val cookie2 = cookieManager.getCookie("https://api.iwara.tv") ?: ""
+            val mergedCookie = listOf(cookie1, cookie2).filter { it.isNotEmpty() }.joinToString("; ")
+            if (mergedCookie.isNotEmpty()) {
+                connection.setRequestProperty("Cookie", mergedCookie)
+            }
+
+            if (!isFollowingNow) {
+                connection.doOutput = true
+                connection.setFixedLengthStreamingMode(0)
+            }
+
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
+
+            val code = connection.responseCode
+            val msg = connection.responseMessage
+            log.append("• HTTP 响应码: $code ($msg)\n")
+
+            val responseText = try {
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.readText() ?: "空响应体"
+            } catch (e: Exception) {
+                "读取响应体失败: ${e.localizedMessage}"
+            }
+
+            log.append("• 服务器返回报文:\n$responseText\n\n")
+            Pair(code in 200..299, log.toString())
+        } catch (e: Exception) {
+            log.append("❌ 网络请求异常: ${e.localizedMessage ?: e.message}\n\n")
+            Pair(false, log.toString())
+        }
+    }
+}
+
+// 1. 通过 WebView 执行点赞 / 取消赞
+// 升级版：带自动兑换 accessToken 机制的点赞执行函数
+fun executeLikeViaWebView(
+    webView: android.webkit.WebView?,
+    videoId: String,
+    isLikedNow: Boolean,
+    token: String,
+    onResult: (success: Boolean, logText: String) -> Unit
+) {
+    if (webView == null) {
+        onResult(false, "❌ 后台 WebView 尚未初始化完成\n")
+        return
+    }
+
+    val method = if (isLikedNow) "DELETE" else "POST"
+    val jsCode = """
+        (async function() {
+            let log = '=== 【WebView 节点点赞 API】 ===\n';
+            try {
+                // 1. 读取 Token (优先使用传入的 token，兜底读取 localStorage)
+                let rawToken = '$token' || localStorage.getItem('token') || localStorage.getItem('access_token') || '';
+                log += '• 本地原始 Token 状态: ' + (rawToken ? ('已加载 (前10位: ' + rawToken.substring(0, 10) + '...)') : '❌ 未找到') + '\n';
+
+                if (!rawToken) {
+                    log += '❌ 缺失有效登录 Token，请先在侧边栏【重新登录】账号！\n\n';
+                    console.log("IWARA_ACTION_RESULT:" + JSON.stringify({ action: 'like', success: false, log: log }));
+                    return;
+                }
+
+                // 2. 核心修复：自动请求 i 站 API 兑换最新的 accessToken
+                let activeToken = rawToken;
+                try {
+                    let tokenRes = await fetch('https://api.iwara.tv/user/token', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Bearer ' + rawToken,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    if (tokenRes.ok) {
+                        let tokenJson = await tokenRes.json();
+                        if (tokenJson && tokenJson.accessToken) {
+                            activeToken = tokenJson.accessToken;
+                            log += '• ✅ 成功自动兑换最新 accessToken!\n';
+                        }
+                    } else {
+                        log += '• 换取 accessToken 响应: ' + tokenRes.status + ' (继续尝试用原始 Token)\n';
+                    }
+                } catch(e) {
+                    log += '• 换取 accessToken 异常: ' + e.toString() + '\n';
+                }
+
+                // 3. 使用有效 Token 发起点赞/取消赞请求
+                log += '• 目标视频 ID: $videoId | 操作: $method\n';
+                let res = await fetch('https://api.iwara.tv/video/$videoId/like', {
+                    method: '$method',
+                    headers: {
+                        'Authorization': 'Bearer ' + activeToken,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/plain, */*'
+                    }
+                });
+
+                log += '• 点赞响应 HTTP 状态码: ' + res.status + ' (' + res.statusText + ')\n';
+                let resText = await res.text();
+                log += '• 服务器返回内容: ' + resText + '\n\n';
+
+                console.log("IWARA_ACTION_RESULT:" + JSON.stringify({
+                    action: 'like',
+                    success: res.ok,
+                    log: log
+                }));
+            } catch(e) {
+                log += '❌ JS 执行异常: ' + e.toString() + '\n\n';
+                console.log("IWARA_ACTION_RESULT:" + JSON.stringify({ action: 'like', success: false, log: log }));
+            }
+        })();
+    """.trimIndent()
+
+    IwaraActionHandler.onActionResult = { action, success, log ->
+        if (action == "like") onResult(success, log)
+    }
+    webView.evaluateJavascript(jsCode, null)
+}
+
+// 最终精简版关注执行函数
+fun executeFollowViaWebView(
+    webView: android.webkit.WebView?,
+    userId: String,
+    username: String,
+    isFollowingNow: Boolean,
+    token: String,
+    onResult: (success: Boolean, logText: String) -> Unit
+) {
+    if (webView == null) {
+        onResult(false, "❌ 后台 WebView 尚未初始化完成\n")
+        return
+    }
+
+    val method = if (isFollowingNow) "DELETE" else "POST"
+    val jsCode = """
+        (async function() {
+            let log = '=== 【WebView 节点关注作者 API】 ===\n';
+            try {
+                let rawToken = '$token' || localStorage.getItem('token') || localStorage.getItem('access_token') || '';
+                log += '• 本地原始 Token 状态: ' + (rawToken ? ('已加载 (前10位: ' + rawToken.substring(0, 10) + '...)') : '❌ 未找到') + '\n';
+
+                if (!rawToken) {
+                    log += '❌ 缺失有效登录 Token，请先在侧边栏【重新登录】账号！\n\n';
+                    console.log("IWARA_ACTION_RESULT:" + JSON.stringify({ action: 'follow', success: false, log: log }));
+                    return;
+                }
+
+                // 1. 自动兑换最新 accessToken
+                let activeToken = rawToken;
+                try {
+                    let tokenRes = await fetch('https://api.iwara.tv/user/token', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Bearer ' + rawToken,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    if (tokenRes.ok) {
+                        let tokenJson = await tokenRes.json();
+                        if (tokenJson && tokenJson.accessToken) {
+                            activeToken = tokenJson.accessToken;
+                            log += '• ✅ 成功自动兑换最新 accessToken!\n';
+                        }
+                    }
+                } catch(e) {}
+
+                // 2. 直连已验证成功的真实关注接口
+                log += '• 目标作者 ID: $userId | 操作: $method\n';
+                let res = await fetch('https://api.iwara.tv/user/$userId/followers', {
+                    method: '$method',
+                    headers: {
+                        'Authorization': 'Bearer ' + activeToken,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/plain, */*'
+                    }
+                });
+
+                log += '• 关注响应 HTTP 状态码: ' + res.status + ' (' + res.statusText + ')\n';
+                let resText = await res.text();
+                log += '• 服务器返回内容: ' + resText + '\n\n';
+
+                console.log("IWARA_ACTION_RESULT:" + JSON.stringify({
+                    action: 'follow',
+                    success: res.ok,
+                    log: log
+                }));
+            } catch(e) {
+                log += '❌ JS 执行异常: ' + e.toString() + '\n\n';
+                console.log("IWARA_ACTION_RESULT:" + JSON.stringify({ action: 'follow', success: false, log: log }));
+            }
+        })();
+    """.trimIndent()
+
+    IwaraActionHandler.onActionResult = { action, success, log ->
+        if (action == "follow") onResult(success, log)
+    }
+    webView.evaluateJavascript(jsCode, null)
+}
+
 // ==================== 播放器页面主体 ====================
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -220,6 +531,26 @@ fun VideoPlayerScreen(
     var pendingSeekPosition by remember { mutableLongStateOf(-1L) }
 
     val context = LocalContext.current
+
+    // 读取 Iwara 账号登录状态
+    val iwaraAccount = remember { com.jiaweiya.hdamieviewer.iwara.IwaraAccountManager.loadUser(context) }
+    val coroutineScope = rememberCoroutineScope()
+
+    // 定义动态点赞与关注状态
+    var isLiked by remember { mutableStateOf(false) }
+    var isFollowing by remember { mutableStateOf(false) }
+
+    // 监听 videoDetail 获取后，同步初始点赞与关注状态
+    LaunchedEffect(videoDetail) {
+        videoDetail?.let { detail ->
+            isLiked = detail.liked ?: false
+            isFollowing = detail.user?.following ?: false
+        }
+    }
+
+    // 声明后台 WebView 引用与回调处理
+    var backgroundWebViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    var onActionResultCallback by remember { mutableStateOf<((action: String, success: Boolean, log: String) -> Unit)?>(null) }
 
     // 获取当前窗口的 Activity（定义在此处，供 DisposableEffect 等早期代码使用）
     val activity = remember(context) { context as? android.app.Activity }
@@ -325,7 +656,7 @@ fun VideoPlayerScreen(
         debugLog += "1. 视频 ID: $videoId, 播放器类型代码: $playerType\n"
 
         // 调用新的请求方法，解析 HTTP 响应码
-        val (detail, responseCode) = fetchVideoDetailResult(videoId)
+        val (detail, responseCode) = fetchVideoDetailResult(videoId, token = iwaraAccount.token)
         videoDetail = detail
 
         if (responseCode == 403) {
@@ -573,12 +904,41 @@ fun VideoPlayerScreen(
                         }
 
                         Button(
-                            onClick = {},
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                            onClick = {
+                                if (!iwaraAccount.isLoggedIn) {
+                                    android.widget.Toast.makeText(context, "请先登录 Iwara 账号", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                val authorId = detail.user?.id ?: ""
+                                val authorUsername = detail.user?.username ?: detail.user?.name ?: ""
+
+                                executeFollowViaWebView(
+                                    webView = backgroundWebViewRef,
+                                    userId = authorId,
+                                    username = authorUsername,
+                                    isFollowingNow = isFollowing,
+                                    token = iwaraAccount.token
+                                ) { success, logText ->
+                                    debugLog += logText
+                                    if (success) {
+                                        isFollowing = !isFollowing
+                                        android.widget.Toast.makeText(context, if (isFollowing) "已关注作者" else "已取消关注", android.widget.Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        android.widget.Toast.makeText(context, "关注操作失败，可点击下方【查看调试信息】排查", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isFollowing) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer
+                            ),
                             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
                             modifier = Modifier.height(36.dp)
                         ) {
-                            Text("关注", color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 13.sp)
+                            Text(
+                                text = if (isFollowing) "已关注" else "关注",
+                                color = if (isFollowing) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimaryContainer,
+                                fontSize = 13.sp
+                            )
                         }
                     }
 
@@ -612,10 +972,71 @@ fun VideoPlayerScreen(
                             .padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.SpaceAround
                     ) {
-                        ActionButton(Icons.Default.TaskAlt, "快速打卡")
-                        ActionButton(Icons.Default.FavoriteBorder, "加入喜欢")
-                        ActionButton(Icons.Default.BookmarkBorder, "加入清单")
-                        ActionButton(Icons.Default.Download, "下载")
+                        // 1. 点赞 (赞) 按钮
+                        ActionButton(
+                            icon = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            label = "赞",
+                            iconTint = if (isLiked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            onClick = {
+                                if (!iwaraAccount.isLoggedIn) {
+                                    android.widget.Toast.makeText(context, "请先登录 Iwara 账号", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@ActionButton
+                                }
+
+                                executeLikeViaWebView(
+                                    webView = backgroundWebViewRef,
+                                    videoId = videoId,
+                                    isLikedNow = isLiked,
+                                    token = iwaraAccount.token
+                                ) { success, logText ->
+                                    debugLog += logText
+                                    if (success) {
+                                        isLiked = !isLiked
+                                        android.widget.Toast.makeText(context, if (isLiked) "已点赞" else "已取消点赞", android.widget.Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        android.widget.Toast.makeText(context, "点赞失败，可点击下方【查看调试信息】排查", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
+                        )
+
+                        // 2. 加入播放列表 按钮
+                        ActionButton(
+                            icon = Icons.Default.BookmarkBorder,
+                            label = "加入播放列表",
+                            onClick = {
+                                if (!iwaraAccount.isLoggedIn) {
+                                    android.widget.Toast.makeText(context, "请先登录 Iwara 账号", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@ActionButton
+                                }
+                                debugLog += "=== 【保存到播放列表调试信息】 ===\n"
+                                debugLog += "• 状态: 播放列表接口准备中\n"
+                                debugLog += "• Token 验证状态: ${if (iwaraAccount.token.isNotEmpty()) "已加载 (${iwaraAccount.token.take(10)}...)" else "❌ 缺失 Token"}\n\n"
+                                android.widget.Toast.makeText(context, "播放列表接口调试日志已记录到控制台", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        // 3. 下载 按钮 (暂不实装)
+                        ActionButton(
+                            icon = Icons.Default.Download,
+                            label = "下载",
+                            onClick = {
+                                android.widget.Toast.makeText(context, "下载功能暂未实装", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        // 4. 分享 按钮
+                        ActionButton(
+                            icon = Icons.Default.Share,
+                            label = "分享",
+                            onClick = {
+                                val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_TEXT, "https://www.iwara.tv/video/$videoId")
+                                }
+                                context.startActivity(android.content.Intent.createChooser(shareIntent, "分享视频"))
+                            }
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(20.dp))
@@ -692,6 +1113,51 @@ fun VideoPlayerScreen(
             }
         )
     }
+
+    // 1x1 透明后台 WebView：专门用于通过真正的浏览器 JS 环境执行 API 操作，无视 Cloudflare 盾
+    AndroidView(
+        factory = { ctx ->
+            android.webkit.WebView(ctx).apply {
+                backgroundWebViewRef = this
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    databaseEnabled = true
+                    userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                }
+
+                android.webkit.CookieManager.getInstance().setAcceptCookie(true)
+                android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                        val msg = consoleMessage?.message() ?: ""
+                        if (msg.startsWith("IWARA_ACTION_RESULT:")) {
+                            val jsonStr = msg.removePrefix("IWARA_ACTION_RESULT:")
+                            try {
+                                val json = com.google.gson.Gson().fromJson(jsonStr, com.google.gson.JsonObject::class.java)
+                                val action = json.get("action")?.asString ?: ""
+                                val success = json.get("success")?.asBoolean ?: false
+                                val log = json.get("log")?.asString ?: ""
+
+                                // 👈 改为调用全局单例回调
+                                IwaraActionHandler.onActionResult?.invoke(action, success, log)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                            return true
+                        }
+                        return super.onConsoleMessage(consoleMessage)
+                    }
+                }
+
+                loadUrl("https://www.iwara.tv")
+            }
+        },
+        modifier = Modifier
+            .size(1.dp)
+            .graphicsLayer { alpha = 0f } // 100% 透明隐藏
+    )
 }
 
 // ExoPlayer 核心渲染模块：接受外部传入的播放器，不再自行创建/销毁
@@ -781,13 +1247,18 @@ fun ExpandableDescription(text: String, modifier: Modifier = Modifier) {
 
 // 2. 快速操作行中的单个按键
 @Composable
-fun ActionButton(icon: ImageVector, label: String) {
+fun ActionButton(
+    icon: ImageVector,
+    label: String,
+    iconTint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit
+) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = Modifier.clickable { }
+        modifier = Modifier.clickable { onClick() }
     ) {
-        Icon(imageVector = icon, contentDescription = label, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(24.dp))
+        Icon(imageVector = icon, contentDescription = label, tint = iconTint, modifier = Modifier.size(24.dp))
         Text(text = label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -6,7 +6,8 @@ data class IwaraAccount(
     val isLoggedIn: Boolean = false,
     val username: String = "",
     val handle: String = "",
-    val avatarUrl: String = ""
+    val avatarUrl: String = "",
+    val token: String = ""
 )
 
 object IwaraAccountManager {
@@ -15,6 +16,7 @@ object IwaraAccountManager {
     private const val KEY_USERNAME = "iwara_username"
     private const val KEY_HANDLE = "iwara_handle"
     private const val KEY_AVATAR_URL = "iwara_avatar_url"
+    private const val KEY_TOKEN = "iwara_token"
 
     fun loadUser(context: Context): IwaraAccount {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -22,7 +24,8 @@ object IwaraAccountManager {
             isLoggedIn = sp.getBoolean(KEY_IS_LOGGED_IN, false),
             username = sp.getString(KEY_USERNAME, "") ?: "",
             handle = sp.getString(KEY_HANDLE, "") ?: "",
-            avatarUrl = sp.getString(KEY_AVATAR_URL, "") ?: ""
+            avatarUrl = sp.getString(KEY_AVATAR_URL, "") ?: "",
+            token = sp.getString(KEY_TOKEN, "") ?: ""
         )
     }
 
@@ -33,10 +36,11 @@ object IwaraAccountManager {
             .putString(KEY_USERNAME, user.username)
             .putString(KEY_HANDLE, user.handle)
             .putString(KEY_AVATAR_URL, user.avatarUrl)
+            .putString(KEY_TOKEN, user.token)
             .apply()
     }
 
     fun clearUser(context: Context) {
-        saveUser(context, IwaraAccount(false, "", "", ""))
+        saveUser(context, IwaraAccount(false, "", "", "", ""))
     }
 }

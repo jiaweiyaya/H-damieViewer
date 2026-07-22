@@ -162,11 +162,13 @@ fun IwaraLoginDialog(
 
                     // 输出结果
                     if (username || handle || avatarUrl) {
+                        let token = localStorage.getItem('token') || localStorage.getItem('access_token') || '';
                         let result = {
                             success: true,
                             username: username || handle || 'Iwara User',
                             handle: handle || username || '',
-                            avatarUrl: avatarUrl || ''
+                            avatarUrl: avatarUrl || '',
+                            token: token
                         };
                         console.log("IWARA_LOGIN_SUCCESS:" + JSON.stringify(result));
                     } else {
@@ -259,7 +261,8 @@ fun IwaraLoginDialog(
                                                     isLoggedIn = true,
                                                     username = json.get("username")?.asString ?: "Iwara User",
                                                     handle = json.get("handle")?.asString ?: "",
-                                                    avatarUrl = json.get("avatarUrl")?.asString ?: ""
+                                                    avatarUrl = json.get("avatarUrl")?.asString ?: "",
+                                                    token = json.get("token")?.asString ?: ""
                                                 )
                                                 onLoginSuccess(account)
                                             } catch (e: Exception) {
