@@ -54,6 +54,7 @@ import com.jiaweiya.hdamieviewer.pages.AboutPage
 import com.jiaweiya.hdamieviewer.pages.BackupCrypto
 import com.jiaweiya.hdamieviewer.pages.BackupData
 import com.jiaweiya.hdamieviewer.pages.FullscreenMarginSettingsPage
+import com.jiaweiya.hdamieviewer.pages.SearchResultsScreen
 import com.jiaweiya.hdamieviewer.pages.ExportBackupScreen
 import com.jiaweiya.hdamieviewer.pages.HomeScreen
 import com.jiaweiya.hdamieviewer.pages.ImportBackupScreen
@@ -316,7 +317,10 @@ class MainActivity : ComponentActivity() {
                                 HomeScreen(
                                     onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                                     onVideoClick = { videoId ->
-                                        navController.navigate("Player/$videoId") // 2. 点击后携带 ID 导航至播放页
+                                        navController.navigate("Player/$videoId")
+                                    },
+                                    onNavigateToSearchResults = { query, type, sort ->
+                                        navController.navigate("SearchResults/$query/$type/$sort")
                                     }
                                 )
                             }
@@ -370,6 +374,42 @@ class MainActivity : ComponentActivity() {
                                 popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Down, animationSpec = tween(400)) }
                             ) {
                                 AboutPage(onBackClick = { navController.popBackStack() })
+                            }
+
+                            // 搜索结果页路由
+                            composable(
+                                route = "SearchResults/{query}/{type}/{sort}",
+                                arguments = listOf(
+                                    navArgument("query") { type = NavType.StringType },
+                                    navArgument("type") { type = NavType.StringType },
+                                    navArgument("sort") { type = NavType.StringType }
+                                ),
+                                // 从屏幕下方向上滑入进入页面
+                                enterTransition = {
+                                    slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Up, animationSpec = tween(400))
+                                },
+                                // 从播放器按返回回到搜索页时，直接原地呈现，不播放二次滑入动画
+                                popEnterTransition = {
+                                    fadeIn(animationSpec = tween(0))
+                                },
+                                // 按返回正常退出搜索页时，向下滑出屏幕
+                                popExitTransition = {
+                                    slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Down, animationSpec = tween(400))
+                                }
+                            ) { backStackEntry ->
+                                val query = backStackEntry.arguments?.getString("query") ?: ""
+                                val type = backStackEntry.arguments?.getString("type") ?: "videos"
+                                val sort = backStackEntry.arguments?.getString("sort") ?: "relevance"
+
+                                SearchResultsScreen(
+                                    initialQuery = query,
+                                    initialType = type,
+                                    initialSort = sort,
+                                    onBackClick = { navController.popBackStack() },
+                                    onVideoClick = { videoId ->
+                                        navController.navigate("Player/$videoId")
+                                    }
+                                )
                             }
 
                             // 全屏屏幕边距调整页面路由

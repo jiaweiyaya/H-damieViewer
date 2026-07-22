@@ -62,12 +62,15 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.input.ImeAction
 
 // ==================== Iwara API 数据实体定义 ====================
 
@@ -206,6 +209,7 @@ object HomeMediaCache {
 fun HomeScreen(
     onOpenDrawer: () -> Unit,
     onVideoClick: (String) -> Unit,
+    onNavigateToSearchResults: (String, String, String) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -437,12 +441,14 @@ fun HomeScreen(
                         SearchExpandedContent(
                             searchText = searchText,
                             onSearchTextChange = { searchText = it },
-                            onSearchTriggered = { query ->
+                            onSearchTriggered = { query, type, sort ->
                                 saveSearchHistory(context, query)
                                 animateTrigger = false
                                 coroutineScope.launch {
                                     kotlinx.coroutines.delay(220)
                                     isSearchActive = false
+                                    val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
+                                    onNavigateToSearchResults(encodedQuery, type, sort)
                                 }
                             },
                             onClose = {
@@ -794,14 +800,17 @@ fun BoxScope.VerticalScrollbar(
 fun SearchExpandedContent(
     searchText: String,
     onSearchTextChange: (String) -> Unit,
-    onSearchTriggered: (String) -> Unit,
+    onSearchTriggered: (query: String, type: String, sort: String) -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
     var historyList by remember { mutableStateOf(getSearchHistory(context)) }
     var showDeleteDialogFor by remember { mutableStateOf<String?>(null) }
 
-    // 唤起时自动获取输入焦点
+    // 👈 新增：悬浮框选择器状态
+    var selectedType by remember { mutableStateOf(searchTypeOptions.first()) }
+    var selectedSort by remember { mutableStateOf(searchSortOptions.first()) }
+
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
@@ -812,25 +821,28 @@ fun SearchExpandedContent(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        // 顶部输入：图1样式（OutlinedTextField：Label 嵌在边框线上）+ 放大镜按键
+        // 顶部输入框与搜索按钮
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically, // 垂直方向居中对齐
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val interactionSource = remember { MutableInteractionSource() }
 
-            // 使用 BasicTextField 配合 M3 官方 outlined 包装盒定制紧凑版输入框
             androidx.compose.foundation.text.BasicTextField(
                 value = searchText,
                 onValueChange = onSearchTextChange,
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp) // 1. 将输入框高度强制缩减为与右侧按钮完全一致的 48.dp
+                    .height(48.dp)
                     .focusRequester(focusRequester),
                 interactionSource = interactionSource,
                 singleLine = true,
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    if (searchText.isNotBlank()) onSearchTriggered(searchText, selectedType.apiKey, selectedSort.apiKey)
+                }),
                 textStyle = androidx.compose.ui.text.TextStyle(
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 14.sp
@@ -843,13 +855,13 @@ fun SearchExpandedContent(
                     singleLine = true,
                     visualTransformation = VisualTransformation.None,
                     interactionSource = interactionSource,
-                    label = { Text("搜索内容...", fontSize = 12.sp) }, // 2. 完美保留图 1 浮在边框上的 Label 样式
+                    label = { Text("搜索内容...", fontSize = 12.sp) },
                     colors = OutlinedTextFieldDefaults.colors(),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp), // 3. 压缩垂直内边距防止文字和光标被裁剪
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     trailingIcon = {
                         if (searchText.isNotEmpty()) {
                             IconButton(
-                                onClick = { onSearchTextChange("") }, // 点击重置内容为空
+                                onClick = { onSearchTextChange("") },
                                 modifier = Modifier.size(24.dp)
                             ) {
                                 Icon(
@@ -876,9 +888,13 @@ fun SearchExpandedContent(
                 )
             }
 
-            // 搜索按键（高度保持为 48.dp）
+            // 搜索按键
             IconButton(
-                onClick = { if (searchText.isNotBlank()) onSearchTriggered(searchText) },
+                onClick = {
+                    if (searchText.isNotBlank()) {
+                        onSearchTriggered(searchText, selectedType.apiKey, selectedSort.apiKey)
+                    }
+                },
                 modifier = Modifier
                     .size(48.dp)
                     .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
@@ -889,6 +905,28 @@ fun SearchExpandedContent(
                     tint = MaterialTheme.colorScheme.onPrimary
                 )
             }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 👈 新增：搜索框下面的两个下拉选择器
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SearchFilterDropdown(
+                selectedOption = selectedType,
+                options = searchTypeOptions,
+                onOptionSelected = { selectedType = it },
+                modifier = Modifier.weight(1f)
+            )
+
+            SearchFilterDropdown(
+                selectedOption = selectedSort,
+                options = searchSortOptions,
+                onOptionSelected = { selectedSort = it },
+                modifier = Modifier.weight(1f)
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -904,7 +942,7 @@ fun SearchExpandedContent(
             )
         }
 
-        // 历史数据纵向列表
+        // 历史数据纵向列表（点击历史项时将选中的 type 和 sort 传出）
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -914,7 +952,7 @@ fun SearchExpandedContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable { onSearchTriggered(item) }
+                        .clickable { onSearchTriggered(item, selectedType.apiKey, selectedSort.apiKey) }
                         .padding(horizontal = 8.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -938,7 +976,6 @@ fun SearchExpandedContent(
                         )
                     }
 
-                    // 删除单条历史 X 按钮
                     IconButton(
                         onClick = { showDeleteDialogFor = item },
                         modifier = Modifier.size(24.dp)

@@ -148,6 +148,30 @@ suspend fun fetchVideoDetail(videoId: String): IwaraVideoDetail? {
     }
 }
 
+// 修改后的详情请求函数：同时返回视频详情和 HTTP 状态码
+suspend fun fetchVideoDetailResult(videoId: String): Pair<IwaraVideoDetail?, Int> {
+    return withContext(Dispatchers.IO) {
+        try {
+            val url = URL("https://api.iwara.tv/video/$videoId")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
+            val responseCode = connection.responseCode
+            if (responseCode == 200) {
+                val reader = BufferedReader(InputStreamReader(connection.inputStream))
+                val json = reader.readText()
+                Pair(Gson().fromJson(json, IwaraVideoDetail::class.java), responseCode)
+            } else {
+                Pair(null, responseCode) // 返回 HTTP 错误状态码（如 403）
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Pair(null, -1) // 物理网络断开/超时异常
+        }
+    }
+}
+
 suspend fun fetchVideoFormats(fileUrl: String): List<IwaraVideoFormat> {
     return withContext(Dispatchers.IO) {
         try {
@@ -188,6 +212,7 @@ fun VideoPlayerScreen(
     var videoDetail by remember { mutableStateOf<IwaraVideoDetail?>(null) }
     var videoUrl by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     var availableFormats by remember { mutableStateOf<List<IwaraVideoFormat>>(emptyList()) }
     var currentResolutionName by remember { mutableStateOf("Source") }
     var pendingSeekPosition by remember { mutableLongStateOf(-1L) }
@@ -293,13 +318,18 @@ fun VideoPlayerScreen(
 
     LaunchedEffect(videoId) {
         isLoading = true
+        errorMessage = null
         debugLog = "--- 开始排查视频加载链路 ---\n"
         debugLog += "1. 视频 ID: $videoId, 播放器类型代码: $playerType\n"
 
-        val detail = fetchVideoDetail(videoId)
+        // 调用新的请求方法，解析 HTTP 响应码
+        val (detail, responseCode) = fetchVideoDetailResult(videoId)
         videoDetail = detail
 
-        if (detail != null) {
+        if (responseCode == 403) {
+            // 精准捕获 403 私人视频状态
+            errorMessage = "这是一条私人视频，无权加载（HTTP 403 - 私人视频）"
+        } else if (detail != null) {
             debugLog += "✅ 2. 获取详情成功!\n"
             debugLog += "   - 视频标题: ${detail.title}\n"
             debugLog += "   - 直链路由 fileUrl: ${detail.fileUrl}\n"
@@ -620,7 +650,14 @@ fun VideoPlayerScreen(
                     .background(MaterialTheme.colorScheme.background),
                 contentAlignment = Alignment.Center
             ) {
-                Text("拉取视频数据失败，请检查连接", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = errorMessage ?: "拉取视频数据失败，请检查连接",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 24.dp)
+                )
             }
         }
     }
