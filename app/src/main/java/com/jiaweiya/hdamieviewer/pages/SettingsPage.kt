@@ -53,7 +53,12 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 
 // 补回缺少的常量及转换函数
 val colorOptions = listOf(
@@ -140,6 +145,8 @@ fun SettingsPage(
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
     var longPressSpeed by remember { mutableFloatStateOf(sharedPrefs.getFloat("long_press_speed", 2.0f)) }
     var vibrationDuration by remember { mutableIntStateOf(sharedPrefs.getInt("vibration_duration", 50)) }
+    var showSpeedCustomDialog by remember { mutableStateOf(false) }
+    var customSpeedsList by remember { mutableStateOf(getCustomSpeeds(context)) }
 
     var showThemeDialog by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
@@ -348,6 +355,20 @@ fun SettingsPage(
                         title = "全屏屏幕边距调整",
                         subtitle = "适配挖孔屏与屏幕圆角遮挡",
                         onClick = onNavigateToFullscreenMarginSettings,
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "进入",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
+
+                    // 新增入口：视频速度调整器选项
+                    SettingsRow(
+                        title = "视频速度调整器选项",
+                        subtitle = "配置播放器右上角展开的 8 个快速倍速档位 (0.1 ~ 6 倍)",
+                        onClick = { showSpeedCustomDialog = true },
                         trailingContent = {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -668,6 +689,19 @@ fun SettingsPage(
                 longPressSpeed = newSpeed
                 sharedPrefs.edit().putFloat("long_press_speed", newSpeed).apply()
                 showSpeedDialog = false
+            }
+        )
+    }
+
+    if (showSpeedCustomDialog) {
+        CustomSpeedSettingsDialog(
+            currentSpeeds = customSpeedsList,
+            onDismiss = { showSpeedCustomDialog = false },
+            onSave = { newSpeeds ->
+                customSpeedsList = newSpeeds
+                saveCustomSpeeds(context, newSpeeds)
+                showSpeedCustomDialog = false
+                Toast.makeText(context, "播放速度设置已更新", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -1388,7 +1422,7 @@ fun PlayerSelectionDialog(
     )
 }
 
-// 1. 长按倍速 4列3行 弹窗（同款流动高亮框样式）
+// 2. 长按倍速选中弹窗（选中的倍速 >= 3.0 时自动标黄并提示）
 @Composable
 fun LongPressSpeedDialog(
     currentSpeed: Float,
@@ -1399,6 +1433,9 @@ fun LongPressSpeedDialog(
     val itemBoundsInRoot = remember { mutableStateMapOf<Float, Rect>() }
     var boxBoundsInRoot by remember { mutableStateOf(Rect.Zero) }
     val density = LocalDensity.current
+    val warningYellow = Color(0xFFFFB300)
+
+    val isHighSpeedSelected = selectedSpeed >= 3.0f
 
     val speedGrid = listOf(
         listOf(1.0f to "不启用", 1.25f to "x1.25", 1.5f to "x1.5", 1.75f to "x1.75"),
@@ -1408,7 +1445,21 @@ fun LongPressSpeedDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("长按播放速度", fontWeight = FontWeight.Bold) },
+        title = {
+            Column {
+                Text("长按播放速度", fontWeight = FontWeight.Bold)
+                if (isHighSpeedSelected) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "当前选择的速度过高，有的设备可能不支持此速度，且高倍速对网络质量要求较高",
+                        fontSize = 11.sp,
+                        color = warningYellow,
+                        lineHeight = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        },
         text = {
             Box(
                 modifier = Modifier
@@ -1431,13 +1482,16 @@ fun LongPressSpeedDialog(
                     val animWidth by animateFloatAsState(targetRelative.width + paddingPx * 2, animSpec, label = "W")
                     val animHeight by animateFloatAsState(targetRelative.height + paddingPx * 2, animSpec, label = "H")
 
+                    // 选中的倍速 >= 3.0 时，高亮外框变黄
+                    val activeColor = if (isHighSpeedSelected) warningYellow else MaterialTheme.colorScheme.primary
+
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .offset { IntOffset(animLeft.roundToInt(), animTop.roundToInt()) }
                             .size(with(density) { animWidth.toDp() }, with(density) { animHeight.toDp() })
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                            .background(activeColor.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                            .border(2.dp, activeColor, RoundedCornerShape(12.dp))
                     )
                 }
 
@@ -1451,6 +1505,9 @@ fun LongPressSpeedDialog(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             rowItems.forEach { (speedVal, label) ->
+                                val isSelected = selectedSpeed == speedVal
+                                val isOptionHigh = speedVal >= 3.0f
+
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
@@ -1462,7 +1519,7 @@ fun LongPressSpeedDialog(
                                         }
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(
-                                            if (selectedSpeed == speedVal) Color.Transparent
+                                            if (isSelected) Color.Transparent
                                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                                         ),
                                     contentAlignment = Alignment.Center
@@ -1470,8 +1527,12 @@ fun LongPressSpeedDialog(
                                     Text(
                                         text = label,
                                         fontSize = 12.sp,
-                                        fontWeight = if (selectedSpeed == speedVal) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (selectedSpeed == speedVal) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = when {
+                                            isSelected && isOptionHigh -> warningYellow
+                                            isSelected -> MaterialTheme.colorScheme.primary
+                                            else -> MaterialTheme.colorScheme.onSurface
+                                        }
                                     )
                                 }
                             }
@@ -1638,5 +1699,246 @@ fun triggerVibration(context: Context, durationMs: Long) {
         }
     } catch (e: Exception) {
         e.printStackTrace()
+    }
+}
+
+// ==================== 自定义倍速辅助函数 ====================
+
+val defaultCustomSpeeds = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+
+fun getCustomSpeeds(context: Context): List<Float> {
+    val sp = context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE)
+    val json = sp.getString("custom_speeds_json", "")
+    if (!json.isNullOrEmpty()) {
+        try {
+            val type = object : com.google.gson.reflect.TypeToken<List<Float>>() {}.type
+            val list = com.google.gson.Gson().fromJson<List<Float>>(json, type)
+            if (list != null && list.size == 8) return list
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    return defaultCustomSpeeds
+}
+
+fun saveCustomSpeeds(context: Context, speeds: List<Float>) {
+    val sp = context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE)
+    val json = com.google.gson.Gson().toJson(speeds)
+    sp.edit().putString("custom_speeds_json", json).apply()
+}
+
+fun isValidSpeedInput(text: String): Boolean {
+    val trimmed = text.trim()
+    val value = trimmed.toFloatOrNull() ?: return false
+    if (value <= 0f || value > 6f) return false
+    val parts = trimmed.split(".")
+    if (parts.size > 2) return false
+    if (parts.size == 2 && parts[1].length > 2) return false
+    return true
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CustomSpeedSettingsDialog(
+    currentSpeeds: List<Float>,
+    onDismiss: () -> Unit,
+    onSave: (List<Float>) -> Unit
+) {
+    val context = LocalContext.current
+    val view = androidx.compose.ui.platform.LocalView.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val imm = remember { context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager }
+
+    // 👈 核心 1：创建虚拟焦点请求器（解决 Compose 无法释放焦点的 Bug）
+    val dummyFocusRequester = remember { FocusRequester() }
+    val warningYellow = Color(0xFFFFB300)
+
+    // 👈 核心 2：强行把焦点转移给虚拟节点 + 调用系统级 API 隐藏软键盘
+    fun dismissInputState() {
+        try {
+            dummyFocusRequester.requestFocus() // 把焦点从输入框剥离！
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        keyboardController?.hide()
+        imm?.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+
+    var inputs by remember {
+        mutableStateOf(currentSpeeds.map { if (it % 1.0f == 0f) it.toInt().toString() else it.toString() })
+    }
+
+    val validityList = remember(inputs) { inputs.map { isValidSpeedInput(it) } }
+    val isAllValid = remember(validityList) { validityList.all { it } }
+
+    val hasHighSpeed = remember(inputs, validityList) {
+        inputs.indices.any { index ->
+            if (!validityList[index]) false
+            else {
+                val num = inputs[index].trim().toFloatOrNull()
+                num != null && num >= 3.0f
+            }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = { /* 防误触：点击外部不关闭 */ },
+        properties = DialogProperties(dismissOnClickOutside = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    dismissInputState() // 点击卡片空白处：抢走焦点 + 收起键盘！
+                },
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                // 👈 核心 3：不可见的虚拟焦点接收节点
+                Box(
+                    modifier = Modifier
+                        .size(1.dp)
+                        .focusRequester(dummyFocusRequester)
+                        .focusable()
+                )
+
+                // 1. 标题区
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { dismissInputState() }
+                ) {
+                    Text("视频速度调整器选项", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    if (hasHighSpeed) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "检测到输入的播放速度过高，有的设备可能不支持此速度，且高倍速对网络质量要求较高",
+                            fontSize = 11.sp,
+                            color = warningYellow,
+                            lineHeight = 15.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 2. 输入框网格 (2列4行)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { dismissInputState() },
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val pairs = inputs.chunked(2)
+                    pairs.forEachIndexed { rowIndex, rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            rowItems.forEachIndexed { colIndex, textValue ->
+                                val globalIndex = rowIndex * 2 + colIndex
+                                val isValid = validityList[globalIndex]
+                                val valFloat = textValue.trim().toFloatOrNull()
+                                val isHigh = isValid && valFloat != null && valFloat >= 3.0f
+
+                                val currentBorderColor = when {
+                                    !isValid -> MaterialTheme.colorScheme.error
+                                    isHigh -> warningYellow
+                                    else -> MaterialTheme.colorScheme.outline
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    OutlinedTextField(
+                                        value = textValue,
+                                        onValueChange = { newText ->
+                                            inputs = inputs.toMutableList().also { it[globalIndex] = newText }
+                                        },
+                                        label = {
+                                            Text(
+                                                text = "速度 ${globalIndex + 1}",
+                                                color = if (isHigh) warningYellow else Color.Unspecified
+                                            )
+                                        },
+                                        singleLine = true,
+                                        isError = !isValid,
+                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = if (isHigh) warningYellow else MaterialTheme.colorScheme.primary,
+                                            unfocusedBorderColor = currentBorderColor,
+                                            errorBorderColor = MaterialTheme.colorScheme.error
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // 3. 底部按钮区
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { dismissInputState() },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = {
+                            dismissInputState()
+                            inputs = defaultCustomSpeeds.map { if (it % 1.0f == 0f) it.toInt().toString() else it.toString() }
+                        }
+                    ) {
+                        Text("恢复默认", color = MaterialTheme.colorScheme.secondary)
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = {
+                                dismissInputState()
+                                onDismiss()
+                            }
+                        ) {
+                            Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Button(
+                            onClick = {
+                                dismissInputState()
+                                val speedValues = inputs.map { it.trim().toFloat() }
+                                onSave(speedValues)
+                            },
+                            enabled = isAllValid,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("确认")
+                        }
+                    }
+                }
+            }
+        }
     }
 }

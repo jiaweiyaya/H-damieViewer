@@ -1,5 +1,6 @@
 package com.jiaweiya.hdamieviewer.pages
 
+import android.content.Context
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.BorderStroke
@@ -43,6 +44,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import java.net.URLEncoder
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 
 // 选项配置实体
 data class SearchFilterOption(val label: String, val apiKey: String)
@@ -281,6 +286,23 @@ fun SearchResultsScreen(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val view = androidx.compose.ui.platform.LocalView.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val imm = remember { context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager }
+
+    // 👈 1. 创建虚拟焦点抢占器（解决 Compose 搜索框无法剥离焦点的 Bug）
+    val dummyFocusRequester = remember { FocusRequester() }
+
+    // 👈 2. 强行把焦点转移给虚拟节点 + 调用系统级 API 收起键盘
+    fun dismissInputState() {
+        try {
+            dummyFocusRequester.requestFocus()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        keyboardController?.hide()
+        imm?.hideSoftInputFromWindow(view.windowToken, 0)
+    }
 
     var searchQuery by remember { mutableStateOf(initialQuery) }
     var selectedType by remember { mutableStateOf(searchTypeOptions.find { it.apiKey == initialType } ?: searchTypeOptions.first()) }
@@ -316,7 +338,7 @@ fun SearchResultsScreen(
 
     fun doSearch(isRefresh: Boolean = false) {
         if (searchQuery.isBlank()) return
-        focusManager.clearFocus()
+        dismissInputState() // 👈 搜索时同步收起键盘与光标
         saveSearchHistory(context, searchQuery)
 
         if (isRefresh) {
@@ -436,22 +458,46 @@ fun SearchResultsScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBackClick) {
+                    IconButton(onClick = {
+                        dismissInputState()
+                        onBackClick()
+                    }) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 }
             )
         }
     ) { innerPadding ->
+        // 👈 3. 最外层 Box 监听全屏空白处点击
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    dismissInputState() // 点击任意非输入框区域：转移焦点给 Dummy 节点，收起键盘！
+                }
         ) {
+            // 👈 4. 不可见的虚拟焦点接收节点
+            Box(
+                modifier = Modifier
+                    .size(1.dp)
+                    .focusRequester(dummyFocusRequester)
+                    .focusable()
+            )
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 16.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        dismissInputState()
+                    }
             ) {
                 // 顶部的两个选择器（选择类型与排序方式） + 右侧接口调试按钮
                 Row(
@@ -482,7 +528,10 @@ fun SearchResultsScreen(
                     )
 
                     IconButton(
-                        onClick = { showDebugDialog = true },
+                        onClick = {
+                            dismissInputState()
+                            showDebugDialog = true
+                        },
                         modifier = Modifier.size(38.dp)
                     ) {
                         Icon(
@@ -510,7 +559,12 @@ fun SearchResultsScreen(
                         }
                     } else if (resultsList.isEmpty()) {
                         Box(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { dismissInputState() },
                             contentAlignment = Alignment.Center
                         ) {
                             Text("暂无相关搜索结果", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -526,7 +580,10 @@ fun SearchResultsScreen(
                                 MediaItemCard(
                                     mediaItem = media,
                                     isVideo = (selectedType.apiKey == "videos"),
-                                    onVideoClick = onVideoClick
+                                    onVideoClick = { videoId ->
+                                        dismissInputState()
+                                        onVideoClick(videoId)
+                                    }
                                 )
                             }
                         }
@@ -538,7 +595,7 @@ fun SearchResultsScreen(
             AndroidView(
                 factory = { ctx ->
                     WebView(ctx).apply {
-                        setBackgroundColor(0) // 👈 将 WebView 背景色设为完全透明
+                        setBackgroundColor(0)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -555,7 +612,7 @@ fun SearchResultsScreen(
                 },
                 modifier = Modifier
                     .size(1.dp)
-                    .graphicsLayer { alpha = 0f } // 👈 容器 100% 透明，小白点彻底消失
+                    .graphicsLayer { alpha = 0f }
             )
         }
     }

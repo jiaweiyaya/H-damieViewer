@@ -563,10 +563,11 @@ fun VideoPlayerScreen(
     val playerType = sharedPrefs.getInt("player_type", 0) // 去除 remember，保证每次进入实时读取最新
 
     // 【核心修复 1】：将 ExoPlayer 的生命周期提升到最顶层管理，脱离分支，使其在旋转重绘时不受干扰
-    // 开启硬件级 AudioTrack 变速，彻底解决倍速切换时的画面顿挫与 Buffer 延迟
+    // 改回：开启 AudioTrack 硬件级倍速，彻底恢复无卡顿、无停顿的极速无缝响应！
     val exoPlayer = remember {
         val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context)
-            .setEnableAudioTrackPlaybackParams(true)
+            .setEnableAudioTrackPlaybackParams(true) // 👈 恢复这行硬件倍速开启代码
+
         androidx.media3.exoplayer.ExoPlayer.Builder(context, renderersFactory)
             .build()
     }
@@ -1352,6 +1353,10 @@ fun MpvMinimalPlayer(
     var isSpeedingUp by remember { mutableStateOf(false) }
     val currentView = androidx.compose.ui.platform.LocalView.current
 
+    // 自定义倍速菜单
+    val customSpeeds = remember { getCustomSpeeds(context) }
+    var isSpeedMenuExpanded by remember { mutableStateOf(false) }
+
     // 防重复设置倍速变量
     var lastSetSpeed by remember { mutableFloatStateOf(1.0f) }
     fun applySpeed(speed: Float) {
@@ -1458,6 +1463,88 @@ fun MpvMinimalPlayer(
         }
     }
 
+    @Composable
+    fun SpeedSelectorBox() {
+        val buttonBgColor by animateColorAsState(
+            targetValue = if (isSpeedMenuExpanded) Color.Black.copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.35f),
+            animationSpec = tween(250),
+            label = "speedButtonBgColor"
+        )
+
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(buttonBgColor)
+                .border(
+                    width = 1.dp,
+                    color = Color.White.copy(alpha = if (isSpeedMenuExpanded) 0.15f else 0.08f),
+                    shape = RoundedCornerShape(6.dp)
+                )
+                .animateContentSize(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+                .clickable {
+                    if (isResolutionMenuExpanded) isResolutionMenuExpanded = false
+                    isSpeedMenuExpanded = !isSpeedMenuExpanded
+                }
+                .padding(
+                    horizontal = if (isSpeedMenuExpanded) 4.dp else 2.dp,
+                    vertical = if (isSpeedMenuExpanded) 4.dp else 2.dp
+                ),
+            contentAlignment = Alignment.TopEnd
+        ) {
+            if (!isSpeedMenuExpanded) {
+                val currentSpeedVal = exoPlayer.playbackParameters.speed
+                val displayTxt = if (currentSpeedVal == 1.0f) "倍速" else "${currentSpeedVal}x"
+                Text(
+                    text = displayTxt,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            } else {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    val rows = customSpeeds.chunked(2)
+                    rows.forEach { rowSpeeds ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            rowSpeeds.forEach { speedVal ->
+                                val isSelected = (exoPlayer.playbackParameters.speed == speedVal)
+                                val label = "${speedVal}x"
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable {
+                                            isSpeedMenuExpanded = false
+                                            applySpeed(speedVal)
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 进度轮询监听
     LaunchedEffect(exoPlayer) {
         while (true) {
@@ -1509,8 +1596,8 @@ fun MpvMinimalPlayer(
     }
 
     // 自动退场：播放状态下 3 秒无操作自动缩回控制栏
-    LaunchedEffect(isControlsVisible, isPlaying, isResolutionMenuExpanded) {
-        if (isControlsVisible && isPlaying && !isResolutionMenuExpanded) {
+    LaunchedEffect(isControlsVisible, isPlaying, isResolutionMenuExpanded, isSpeedMenuExpanded) {
+        if (isControlsVisible && isPlaying && !isResolutionMenuExpanded && !isSpeedMenuExpanded) {
             kotlinx.coroutines.delay(3000)
             isControlsVisible = false
         }
@@ -1560,14 +1647,17 @@ fun MpvMinimalPlayer(
                             longPressJob.cancel()
 
                             if (isLongPressTriggered) {
-                                // 抬起手指：立刻恢复 1.0x 正常倍速
+                                // 抬起手指：恢复 1.0x 倍速
                                 isSpeedingUp = false
                                 applySpeed(1.0f)
                             } else {
-                                // 普通单击：开关控制栏
-                                if (isResolutionMenuExpanded) {
+                                // 普通单击处理：
+                                if (isSpeedMenuExpanded || isResolutionMenuExpanded) {
+                                    // 👈 核心修复：如果任意菜单处于展开状态，点击仅收起菜单，保持控制栏常驻！
+                                    isSpeedMenuExpanded = false
                                     isResolutionMenuExpanded = false
                                 } else {
+                                    // 菜单未展开时，正常开关控制栏
                                     isControlsVisible = !isControlsVisible
                                 }
                             }
@@ -1752,14 +1842,21 @@ fun MpvMinimalPlayer(
 
                     // 仅在竖屏时显示在顶部
                     if (!isLandscape) {
-                        Box(
-                            modifier = Modifier.height(36.dp),
-                            contentAlignment = Alignment.TopEnd
-                        ) {
-                            Box(
-                                modifier = Modifier.wrapContentSize(align = Alignment.TopEnd, unbounded = true)
-                            ) {
-                                ResolutionSelectorBox()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 1. 速度控制按钮（位于分辨率左侧）
+                            Box(modifier = Modifier.height(36.dp), contentAlignment = Alignment.TopEnd) {
+                                Box(modifier = Modifier.wrapContentSize(align = Alignment.TopEnd, unbounded = true)) {
+                                    SpeedSelectorBox()
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            // 2. 分辨率按钮
+                            Box(modifier = Modifier.height(36.dp), contentAlignment = Alignment.TopEnd) {
+                                Box(modifier = Modifier.wrapContentSize(align = Alignment.TopEnd, unbounded = true)) {
+                                    ResolutionSelectorBox()
+                                }
                             }
                         }
                     }
@@ -1884,19 +1981,23 @@ fun MpvMinimalPlayer(
                         fontWeight = FontWeight.Bold
                     )
 
-                    // 横屏模式下，画质按钮显示在全屏按钮左侧
+                    // 横屏模式下，速度 + 画质按钮显示在全屏按钮左侧
                     if (isLandscape) {
                         Spacer(modifier = Modifier.width(8.dp))
-                        // 1. 外层 Box 固定 36.dp 占位，保证底栏 Row 高度恒定，进度条等控件绝对不移动！
-                        Box(
-                            modifier = Modifier.height(36.dp),
-                            contentAlignment = Alignment.BottomEnd
-                        ) {
-                            // 2. 内层 Box 使用 unbounded = true 解除 36.dp 限制，允许画质菜单完全向上展开！
-                            Box(
-                                modifier = Modifier.wrapContentSize(align = Alignment.BottomEnd, unbounded = true)
-                            ) {
-                                ResolutionSelectorBox()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 全屏模式下：速度按钮同样在分辨率按钮左侧向上展开
+                            Box(modifier = Modifier.height(36.dp), contentAlignment = Alignment.BottomEnd) {
+                                Box(modifier = Modifier.wrapContentSize(align = Alignment.BottomEnd, unbounded = true)) {
+                                    SpeedSelectorBox()
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            Box(modifier = Modifier.height(36.dp), contentAlignment = Alignment.BottomEnd) {
+                                Box(modifier = Modifier.wrapContentSize(align = Alignment.BottomEnd, unbounded = true)) {
+                                    ResolutionSelectorBox()
+                                }
                             }
                         }
                     }
