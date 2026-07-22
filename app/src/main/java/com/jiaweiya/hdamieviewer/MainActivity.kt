@@ -11,7 +11,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContentTransitionScope
-import androidx.compose.animation.core.animateDpAsState
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -33,8 +32,6 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -58,6 +55,8 @@ import com.jiaweiya.hdamieviewer.pages.SearchResultsScreen
 import com.jiaweiya.hdamieviewer.pages.ExportBackupScreen
 import com.jiaweiya.hdamieviewer.pages.HomeScreen
 import com.jiaweiya.hdamieviewer.pages.ImportBackupScreen
+import com.jiaweiya.hdamieviewer.iwara.IwaraAccountManager
+import com.jiaweiya.hdamieviewer.iwara.IwaraLoginDialog
 import com.jiaweiya.hdamieviewer.pages.MainDrawerSheet
 import com.jiaweiya.hdamieviewer.pages.SettingsPage
 import com.jiaweiya.hdamieviewer.ui.theme.HDAmieViewerTheme
@@ -66,7 +65,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.LocalDate
 import androidx.compose.ui.unit.sp
 import com.jiaweiya.hdamieviewer.pages.resolveThemeColor
 import androidx.navigation.navArgument
@@ -206,6 +204,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // 加载 Iwara 账号登录状态
+                var iwaraAccount by remember { mutableStateOf(IwaraAccountManager.loadUser(context)) }
+                var showIwaraLoginDialog by remember { mutableStateOf(false) }
+
                 var timetables by remember { mutableStateOf<List<TimetableData>>(emptyList()) }
                 var timeProfiles by remember { mutableStateOf<List<TimeProfile>>(emptyList()) }
                 var pendingBackupToImport by remember { mutableStateOf<BackupData?>(null) }
@@ -278,6 +280,7 @@ class MainActivity : ComponentActivity() {
                     gesturesEnabled = isHomeRoute, // 👈 仅在主页允许右滑手势展开侧边栏
                     drawerContent = {
                         MainDrawerSheet(
+                            iwaraAccount = iwaraAccount,
                             onCloseDrawer = { coroutineScope.launch { drawerState.close() } },
                             onNavigateToSettings = { navController.navigate("Settings") },
                             onNavigateToAbout = { navController.navigate("About") },
@@ -298,6 +301,9 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
+                            },
+                            onOpenIwaraLogin = {
+                                showIwaraLoginDialog = true
                             }
                         )
                     }
@@ -523,6 +529,19 @@ class MainActivity : ComponentActivity() {
                                 },
                                 dismissButton = {
                                     TextButton(onClick = { updateInfo = null }) { Text("暂不更新", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                }
+                            )
+                        }
+
+                        // 显示 Iwara WebView 登录弹窗
+                        if (showIwaraLoginDialog) {
+                            IwaraLoginDialog(
+                                onDismissRequest = { showIwaraLoginDialog = false },
+                                onLoginSuccess = { newUser ->
+                                    iwaraAccount = newUser
+                                    IwaraAccountManager.saveUser(context, newUser)
+                                    showIwaraLoginDialog = false
+                                    Toast.makeText(context, "登录成功: ${newUser.username}", Toast.LENGTH_SHORT).show()
                                 }
                             )
                         }
