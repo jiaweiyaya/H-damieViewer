@@ -82,6 +82,40 @@ import androidx.compose.ui.input.pointer.changedToUp
 import com.jiaweiya.hdamieviewer.iwara.DownloadedVideoDb
 import com.jiaweiya.hdamieviewer.iwara.IwaraDownloadManager
 
+// 全局视频播放 CacheManager 单例
+@OptIn(UnstableApi::class)
+object PlayerCacheManager {
+    private var simpleCache: androidx.media3.datasource.cache.SimpleCache? = null
+
+    @Synchronized
+    fun getCache(context: Context, maxBytes: Long): androidx.media3.datasource.cache.SimpleCache? {
+        if (maxBytes <= 0L) return null
+        val cacheDir = java.io.File(context.cacheDir, "iwara_video_cache")
+        if (!cacheDir.exists()) cacheDir.mkdirs()
+
+        if (simpleCache == null) {
+            val evictor = androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor(maxBytes)
+            val databaseProvider = androidx.media3.database.StandaloneDatabaseProvider(context)
+            simpleCache = androidx.media3.datasource.cache.SimpleCache(cacheDir, evictor, databaseProvider)
+        }
+        return simpleCache
+    }
+
+    @Synchronized
+    fun clearCache(context: Context) {
+        try {
+            simpleCache?.let { cache ->
+                val keys = HashSet(cache.keys)
+                for (key in keys) {
+                    cache.removeResource(key)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+}
+
 // ==================== Iwara 详情 API 专属数据模型 ====================
 
 data class IwaraTagDetail(
@@ -554,14 +588,58 @@ fun VideoPlayerScreen(
 
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
     val playerType = sharedPrefs.getInt("player_type", 0) // 去除 remember，保证每次进入实时读取最新
+    val maxCacheBytes = remember { sharedPrefs.getLong("retained_cache_bytes", 100 * 1024 * 1024L) }
 
     // 【核心修复 1】：将 ExoPlayer 的生命周期提升到最顶层管理，脱离分支，使其在旋转重绘时不受干扰
     // 改回：开启 AudioTrack 硬件级倍速，彻底恢复无卡顿、无停顿的极速无缝响应！
     val exoPlayer = remember {
         val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context)
-            .setEnableAudioTrackPlaybackParams(true) // 👈 恢复这行硬件倍速开启代码
+            .setEnableAudioTrackPlaybackParams(true)
+
+        // 1. 设置内存 BackBuffer 保持，实现拉倒倒退 0ms 闪开
+        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            .setBackBuffer(1000 * 1000, true)
+            .build()
+
+        // 2. HTTP 网络请求源标头
+        val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            .setAllowCrossProtocolRedirects(true)
+
+        // 3. 构建 CacheDataSource，支持断点、回退与二次打开缓存命中
+        val mediaSourceFactory = if (maxCacheBytes > 0L) {
+            val cache = PlayerCacheManager.getCache(context, maxCacheBytes)
+            if (cache != null) {
+                // 精准提取 URL 中的 filename 参数（如 a2212be5-..._Source.mp4）作为唯一静态 Key
+                val cacheKeyFactory = androidx.media3.datasource.cache.CacheKeyFactory { dataSpec ->
+                    val uri = dataSpec.uri
+                    val filename = uri.getQueryParameter("filename")
+                    if (!filename.isNullOrEmpty()) {
+                        "iwara_file_$filename"
+                    } else {
+                        dataSpec.key ?: uri.buildUpon().clearQuery().build().toString()
+                    }
+                }
+
+                val cacheDataSourceFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                    .setCache(cache)
+                    .setUpstreamDataSourceFactory(httpDataSourceFactory)
+                    .setCacheKeyFactory(cacheKeyFactory)
+                    .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+                    .setDataSourceFactory(cacheDataSourceFactory)
+            } else {
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+                    .setDataSourceFactory(httpDataSourceFactory)
+            }
+        } else {
+            androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+                .setDataSourceFactory(httpDataSourceFactory)
+        }
 
         androidx.media3.exoplayer.ExoPlayer.Builder(context, renderersFactory)
+            .setLoadControl(loadControl)
+            .setMediaSourceFactory(mediaSourceFactory)
             .build()
     }
 

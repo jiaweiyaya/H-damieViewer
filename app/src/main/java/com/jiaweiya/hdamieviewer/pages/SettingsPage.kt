@@ -150,12 +150,15 @@ fun SettingsPage(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val coroutineScope = rememberCoroutineScope()
 
     val sharedPrefs = remember { context.getSharedPreferences("HDAmieViewerDB", Context.MODE_PRIVATE) }
     var showPathDialog by remember { mutableStateOf(false) }
     var activeDownloadPath by remember { mutableStateOf(DownloadedVideoDb.getActiveDownloadDir(context).absolutePath) }
     var longPressSpeed by remember { mutableFloatStateOf(sharedPrefs.getFloat("long_press_speed", 2.0f)) }
     var vibrationDuration by remember { mutableIntStateOf(sharedPrefs.getInt("vibration_duration", 50)) }
+    var retainedCacheBytes by remember { mutableLongStateOf(sharedPrefs.getLong("retained_cache_bytes", 100 * 1024 * 1024L)) }
+    var showCacheLimitDialog by remember { mutableStateOf(false) }
     var doubleTapInterval by remember { mutableIntStateOf(sharedPrefs.getInt("double_tap_interval", 200)) }
     var showDoubleTapDialog by remember { mutableStateOf(false) }
     var showSwipeSettingChoiceDialog by remember { mutableStateOf(false) }
@@ -383,6 +386,27 @@ fun SettingsPage(
                         title = "视频速度调整器选项",
                         subtitle = "配置播放器右上角展开的 8 个快速倍速档位 (0.1 ~ 6 倍)",
                         onClick = { showSpeedCustomDialog = true },
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "进入",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
+
+                    // 保留已播内容上限
+                    val isNativeMediaPlayer = playerType == 2
+                    SettingsRow(
+                        title = "保留已播内容上限",
+                        subtitle = if (isNativeMediaPlayer) {
+                            "因为选用了 MediaPlayer (系统原生)，所以此选项不可用"
+                        } else {
+                            "当前上限：${formatCacheBytesDisplay(retainedCacheBytes)}（倒退零延迟，重复观看免下载）"
+                        },
+                        subtitleColor = if (isNativeMediaPlayer) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        enabled = !isNativeMediaPlayer,
+                        onClick = { showCacheLimitDialog = true },
                         trailingContent = {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -736,7 +760,6 @@ fun SettingsPage(
     }
 
     if (showClearCacheDialog) {
-        val coroutineScope = rememberCoroutineScope()
         AlertDialog(
             onDismissRequest = { showClearCacheDialog = false },
             title = { Text("确认清除缓存？", fontWeight = FontWeight.Bold) },
@@ -746,12 +769,17 @@ fun SettingsPage(
                     onClick = {
                         showClearCacheDialog = false
                         coroutineScope.launch {
-                            val success = withContext(Dispatchers.IO) { clearAppCache(context) }
-                            if (success) {
-                                Toast.makeText(context, "缓存清除成功", Toast.LENGTH_SHORT).show()
-                                val newSize = withContext(Dispatchers.IO) { getTotalCacheSize(context) }
-                                cacheSizeStr = formatCacheSize(newSize)
+                            withContext(Dispatchers.IO) {
+                                clearAppCache(context)
                             }
+                            // 1. 立刻赋值 0L，强行通知 Compose 触发界面重绘并提供即时视觉反馈
+                            cacheSizeStr = formatCacheSize(0L)
+                            Toast.makeText(context, "缓存已清理", Toast.LENGTH_SHORT).show()
+
+                            // 2. 延迟 200ms 等待 Android 系统内核解绑文件句柄后，实地重新盘点
+                            kotlinx.coroutines.delay(200)
+                            val newSize = withContext(Dispatchers.IO) { getTotalCacheSize(context) }
+                            cacheSizeStr = formatCacheSize(newSize)
                         }
                     }
                 ) { Text("确认") }
@@ -807,6 +835,18 @@ fun SettingsPage(
                 doubleTapInterval = newInterval
                 sharedPrefs.edit().putInt("double_tap_interval", newInterval).apply()
                 showDoubleTapDialog = false
+            }
+        )
+    }
+
+    if (showCacheLimitDialog) {
+        RetainedCacheLimitDialog(
+            currentBytes = retainedCacheBytes,
+            onDismiss = { showCacheLimitDialog = false },
+            onSave = { newBytes ->
+                retainedCacheBytes = newBytes
+                sharedPrefs.edit().putLong("retained_cache_bytes", newBytes).apply()
+                showCacheLimitDialog = false
             }
         )
     }
@@ -1080,13 +1120,16 @@ fun IconSelectionDialog(currentId: Int, onDismiss: () -> Unit, onSave: (AppIconD
 fun SettingsRow(
     title: String,
     subtitle: String? = null,
+    subtitleColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
     trailingContent: @Composable (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .graphicsLayer { alpha = if (enabled) 1f else 0.4f } // 禁用时全条目半透明置灰
+            .then(if (enabled && onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 16.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -1095,7 +1138,7 @@ fun SettingsRow(
             Text(title, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
             if (subtitle != null) {
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(subtitle, fontSize = 12.sp, color = subtitleColor)
             }
         }
         if (trailingContent != null) {
@@ -1835,6 +1878,172 @@ fun DoubleTapIntervalDialog(
     )
 }
 
+// 缓存大小格式化辅助函数
+fun formatCacheBytesDisplay(bytes: Long): String {
+    if (bytes <= 0L) return "已关闭缓存"
+    val gib = 1024L * 1024L * 1024L
+    val mib = 1024L * 1024L
+    val kib = 1024L
+    return when {
+        bytes >= gib -> String.format(java.util.Locale.US, "%.2f GiB", bytes.toDouble() / gib)
+        bytes >= mib -> String.format(java.util.Locale.US, "%.1f MiB", bytes.toDouble() / mib)
+        else -> String.format(java.util.Locale.US, "%.1f KiB", bytes.toDouble() / kib)
+    }
+}
+
+private fun formatBytesToInputPair(bytes: Long): Pair<String, String> {
+    val gib = 1024L * 1024L * 1024L
+    val mib = 1024L * 1024L
+    val kib = 1024L
+    return when {
+        bytes >= gib -> String.format(java.util.Locale.US, "%.3f", bytes.toDouble() / gib).trimEnd('0').trimEnd('.') to "GiB"
+        bytes >= mib -> String.format(java.util.Locale.US, "%.3f", bytes.toDouble() / mib).trimEnd('0').trimEnd('.') to "MiB"
+        bytes >= kib -> String.format(java.util.Locale.US, "%.3f", bytes.toDouble() / kib).trimEnd('0').trimEnd('.') to "KiB"
+        else -> "100" to "MiB"
+    }
+}
+
+// 保留已播内容上限设置弹窗（支持 KiB/MiB/GiB 下拉选择，多至 3 位小数）
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RetainedCacheLimitDialog(
+    currentBytes: Long,
+    onDismiss: () -> Unit,
+    onSave: (Long) -> Unit
+) {
+    val initialPair = remember(currentBytes) {
+        formatBytesToInputPair(if (currentBytes <= 0) 100 * 1024 * 1024L else currentBytes)
+    }
+    var inputText by remember { mutableStateOf(initialPair.first) }
+    var selectedUnit by remember { mutableStateOf(initialPair.second) }
+    var isDropdownExpanded by remember { mutableStateOf(false) }
+
+    val units = listOf("KiB", "MiB", "GiB")
+    val maxGiBInBytes = 2L * 1024L * 1024L * 1024L // 2 GiB 上限
+
+    val parsedVal = inputText.trim().toDoubleOrNull()
+    val decimalCount = if (inputText.contains(".")) inputText.substringAfter(".").length else 0
+    val isValidDecimal = decimalCount <= 3
+
+    val unitMultiplier = when (selectedUnit) {
+        "KiB" -> 1024L
+        "MiB" -> 1024L * 1024L
+        "GiB" -> 1024L * 1024L * 1024L
+        else -> 1024L * 1024L
+    }
+
+    val calculatedBytes = if (parsedVal != null && parsedVal >= 0) {
+        (parsedVal * unitMultiplier).toLong()
+    } else -1L
+
+    val isValid = parsedVal != null && isValidDecimal && calculatedBytes in 0L..maxGiBInBytes
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("保留已播内容上限", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "设置视频缓存保留上限（范围：0 ~ 2 GiB）。已看过的视频或拉倒进度的内容将在上限范围内自动保留在本地，实现倒退零加载与重复播放秒开。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 16.sp
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        singleLine = true,
+                        label = { Text("数值 (最多3位小数)") },
+                        isError = !isValid,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    Box {
+                        OutlinedButton(
+                            onClick = { isDropdownExpanded = true },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(selectedUnit, fontWeight = FontWeight.Bold)
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = isDropdownExpanded,
+                            onDismissRequest = { isDropdownExpanded = false }
+                        ) {
+                            units.forEach { unit ->
+                                DropdownMenuItem(
+                                    text = { Text(unit, fontWeight = FontWeight.Medium) },
+                                    onClick = {
+                                        selectedUnit = unit
+                                        isDropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (!isValid) {
+                    Text(
+                        text = if (!isValidDecimal) "小数部分不能超过 3 位" else "数值必须介于 0 至 2 GiB 之间",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp
+                    )
+                } else {
+                    Text(
+                        text = "换算总大小：${formatCacheBytesDisplay(calculatedBytes)}",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isValid) {
+                        onSave(calculatedBytes)
+                    }
+                },
+                enabled = isValid,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("确定")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(
+                    onClick = {
+                        inputText = "100"
+                        selectedUnit = "MiB"
+                    }
+                ) {
+                    Text("恢复默认", color = MaterialTheme.colorScheme.secondary)
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    )
+}
+
 private fun getFolderSize(file: java.io.File?): Long {
     if (file == null || !file.exists()) return 0L
     if (file.isFile) return file.length()
@@ -1853,29 +2062,35 @@ private fun getTotalCacheSize(context: Context): Long {
     return size
 }
 
-private fun deleteDirContent(file: java.io.File?): Boolean {
-    if (file == null || !file.exists()) return false
-    if (file.isDirectory) {
-        val children = file.listFiles()
-        if (children != null) {
-            for (child in children) { deleteDirContent(child) }
-        }
-    }
-    return file.delete()
-}
-
 private fun clearAppCache(context: Context): Boolean {
     var success = true
     try {
-        val cacheFiles = context.cacheDir.listFiles()
-        if (cacheFiles != null) {
-            for (f in cacheFiles) { success = success && deleteDirContent(f) }
+        // 1. 清理 ExoPlayer 视频缓存
+        PlayerCacheManager.clearCache(context)
+
+        // 2. 清理 Coil 图片加载框架的磁盘与内存缓存
+        try {
+            coil.Coil.imageLoader(context).diskCache?.clear()
+            coil.Coil.imageLoader(context).memoryCache?.clear()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        val extCacheDir = context.externalCacheDir
-        if (extCacheDir != null) {
-            val extCacheFiles = extCacheDir.listFiles()
-            if (extCacheFiles != null) {
-                for (f in extCacheFiles) { success = success && deleteDirContent(f) }
+
+        // 3. 使用 deleteRecursively 强行递归清空内部缓存目录
+        context.cacheDir?.listFiles()?.forEach { file ->
+            try {
+                file.deleteRecursively()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        // 4. 使用 deleteRecursively 强行递归清空外部缓存目录
+        context.externalCacheDir?.listFiles()?.forEach { file ->
+            try {
+                file.deleteRecursively()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     } catch (e: Exception) {
