@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
@@ -63,15 +62,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.google.gson.Gson
-import com.google.gson.JsonParser
 import com.jiaweiya.hdamieviewer.iwara.IwaraAccountManager
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Collections
 import java.net.HttpURLConnection
@@ -125,21 +121,19 @@ fun fixImageUrl(rawUrl: String): String {
     return trimmed
 }
 
-// 实时图片与头像网络连通性深度诊断函数
-suspend fun testImageNetworkAccess(urls: List<String>): String {
-    return withContext(Dispatchers.IO) {
-        val log = StringBuilder()
-        log.append("\n=== 【图片/头像网络加载深度诊断】 ===\n")
-
+// 实时图片与头像网络连通性深度诊断函数（支持实时日志回调）
+suspend fun testImageNetworkAccess(urls: List<String>, onLogLine: (String) -> Unit) {
+    withContext(Dispatchers.IO) {
         val cookieManager = android.webkit.CookieManager.getInstance()
         val cookie = cookieManager.getCookie("https://www.iwara.tv") ?: ""
-        log.append("• 共享 Cookie 状态: ${if (cookie.isNotEmpty()) "已获取 (长度 ${cookie.length})" else "❌ 缺失 Cookie"}\n\n")
+        onLogLine("=== 【图片/头像网络加载深度诊断】 ===")
+        onLogLine("• 共享 Cookie 状态: ${if (cookie.isNotEmpty()) "已获取 (长度 ${cookie.length})" else "❌ 缺失 Cookie"}")
 
         urls.take(4).forEachIndexed { idx, rawUrl ->
             val fixedUrl = fixImageUrl(rawUrl)
-            log.append("📍 [#${idx + 1}] 测试图片: $fixedUrl\n")
+            onLogLine("📍 [#${idx + 1}] 测试图片: $fixedUrl")
             if (fixedUrl.isEmpty()) {
-                log.append("   ❌ 路径为空\n")
+                onLogLine("   ❌ 路径为空")
                 return@forEachIndexed
             }
 
@@ -160,20 +154,18 @@ suspend fun testImageNetworkAccess(urls: List<String>): String {
                 val contentType = conn.contentType ?: "未知"
                 val contentLength = conn.contentLengthLong
 
-                log.append("   -> HTTP 响应状态码: $code ($msg)\n")
-                log.append("   -> Content-Type: $contentType | 大小: $contentLength bytes\n")
+                onLogLine("   -> HTTP 响应状态码: $code ($msg)")
+                onLogLine("   -> Content-Type: $contentType | 大小: $contentLength bytes")
 
                 if (code in 200..299) {
-                    log.append("   🎉 访问成功！网络与防盗链标头完全打通！\n")
+                    onLogLine("   🎉 访问成功！网络与防盗链标头完全打通！")
                 } else {
-                    log.append("   ❌ 访问被拒绝！HTTP $code (可能触发了 Cloudflare 盾)\n")
+                    onLogLine("   ❌ 访问被拒绝！HTTP $code (可能触发了 Cloudflare 盾)")
                 }
             } catch (e: Exception) {
-                log.append("   ❌ 物理网络异常: ${e.localizedMessage ?: e.message}\n")
+                onLogLine("   ❌ 物理网络异常: ${e.localizedMessage ?: e.message}")
             }
-            log.append("\n")
         }
-        log.toString()
     }
 }
 
@@ -210,18 +202,13 @@ object IwaraCategoryActionHandler {
     var onCategoryResult: ((Map<String, List<IwaraMedia>>) -> Unit)? = null
 }
 
-// 终极双引擎版：在 WebView 环境内直连官方 API，精准拉取作者/播放量/赞数/时长/R-18全量字段
+// 终极双引擎版：在 WebView 环境内直连官方 API，带毫秒级实时日志输出
 fun parseHomePageDomViaWebView(
     webView: WebView,
     onResult: (videos: List<IwaraMedia>, images: List<IwaraMedia>, subVideos: List<IwaraMedia>, subImages: List<IwaraMedia>, subPosts: List<IwaraMedia>, log: String) -> Unit
 ) {
-    val log = StringBuilder()
-    log.append("=== 首页数据抓取引擎调试日志 ===\n")
-    log.append("1. 目标地址: https://www.iwara.tv/\n")
-
     IwaraHomeActionHandler.onHomeResult = { videos, images, subVideos, subImages, subPosts, logText ->
-        log.append(logText)
-        onResult(videos, images, subVideos, subImages, subPosts, log.toString())
+        onResult(videos, images, subVideos, subImages, subPosts, logText)
     }
 
     webView.loadUrl("https://www.iwara.tv/")
@@ -229,23 +216,46 @@ fun parseHomePageDomViaWebView(
     webView.postDelayed({
         val jsCode = """
             (async function() {
-            let log = '--- [1. WebView 内存 API 节点抓取] ---\n';
-            try {
-                let token = localStorage.getItem('token') || localStorage.getItem('access_token') || '';
-                let headers = { 'Accept': 'application/json, text/plain, */*' };
-                if (token) headers['Authorization'] = 'Bearer ' + token;
+                function sendLog(msg) {
+                    let now = new Date();
+                    let timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+                    console.log("IWARA_DEBUG_LOG:[" + timeStr + "] " + msg);
+                }
 
-                log += '• 正在请求 API: 热门, 订阅(视频/图片/帖子)...\n';
-                let [vRes, iRes, svRes, siRes, spRes] = await Promise.all([
-                    fetch('https://api.iwara.tv/videos?sort=trending&limit=12', { headers }).catch(e => null),
-                    fetch('https://api.iwara.tv/images?sort=trending&limit=12', { headers }).catch(e => null),
-                    fetch('https://api.iwara.tv/videos?subscribed=true&limit=6', { headers }).catch(e => null),
-                    fetch('https://api.iwara.tv/images?subscribed=true&limit=6', { headers }).catch(e => null),
-                    fetch('https://api.iwara.tv/posts?subscribed=true&limit=6', { headers }).catch(e => null)
-                ]);
+                sendLog('=== 1. WebView 内存 API 节点抓取开始 ===');
+                try {
+                    let token = localStorage.getItem('token') || localStorage.getItem('access_token') || '';
+                    if (token) {
+                        sendLog('• 本地 Token 状态: 已加载 (前10位: ' + token.substring(0, 10) + '...)');
+                    } else {
+                        sendLog('• 本地 Token 状态: ⚠️ 未登录/未找到 Token (订阅内容将跳过)');
+                    }
 
-                if (vRes && vRes.ok) {
-                    let vData = await vRes.json();
+                    let headers = { 'Accept': 'application/json, text/plain, */*' };
+                    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+                    sendLog('• 正在并发请求 API (/videos, /images)...');
+
+                    // 1. 请求公共列表 API
+                    let vRes = await fetch('https://api.iwara.tv/videos?sort=trending&limit=12', { headers }).catch(e => { sendLog('❌ 请求 /videos 异常: ' + e); return null; });
+                    if (vRes) sendLog('  -> API /videos 响应: HTTP ' + vRes.status);
+
+                    let iRes = await fetch('https://api.iwara.tv/images?sort=trending&limit=12', { headers }).catch(e => { sendLog('❌ 请求 /images 异常: ' + e); return null; });
+                    if (iRes) sendLog('  -> API /images 响应: HTTP ' + iRes.status);
+
+                    // 2. 根据登录状态请求订阅列表 API
+                    let svRes = null, siRes = null, spRes = null;
+                    if (token) {
+                        sendLog('• 正在请求订阅内容 API (/videos, /images, /posts)...');
+                        svRes = await fetch('https://api.iwara.tv/videos?subscribed=true&limit=6', { headers }).catch(e => null);
+                        siRes = await fetch('https://api.iwara.tv/images?subscribed=true&limit=6', { headers }).catch(e => null);
+                        spRes = await fetch('https://api.iwara.tv/posts?subscribed=true&limit=6', { headers }).catch(e => null);
+                        if (svRes) sendLog('  -> API 订阅视频 响应: HTTP ' + svRes.status);
+                        if (siRes) sendLog('  -> API 订阅图片 响应: HTTP ' + siRes.status);
+                        if (spRes) sendLog('  -> API 订阅帖子 响应: HTTP ' + spRes.status);
+                    }
+
+                    let vData = (vRes && vRes.ok) ? await vRes.json() : { results: [] };
                     let iData = (iRes && iRes.ok) ? await iRes.json() : { results: [] };
                     let svData = (svRes && svRes.ok) ? await svRes.json() : { results: [] };
                     let siData = (siRes && siRes.ok) ? await siRes.json() : { results: [] };
@@ -299,10 +309,8 @@ fun parseHomePageDomViaWebView(
                     function parseApiList(list, typeName) {
                         if (!list || !Array.isArray(list)) return [];
                         return list.map(item => {
-                            // 👈 核心修复：使用 typeName.includes('图片') 判定，支持 '精选图片' 和 '订阅图片'
                             let isImage = (typeName && typeName.includes('图片')) || item.type === 'image';
                             let thumb = isImage ? formatImageThumb(item) : formatVideoThumb(item);
-                            
                             let u = item.user || {};
                             return {
                                 id: item.id,
@@ -346,21 +354,22 @@ fun parseHomePageDomViaWebView(
                     let siItems = parseApiList(siData.results, '订阅图片');
                     let spItems = parsePostList(spData.results);
 
+                    sendLog('🎉 JSON 格式化完成：热门视频 ' + vItems.length + ' 条, 精选图片 ' + iItems.length + ' 条, 订阅视频 ' + svItems.length + ' 条');
+
                     let result = {
                         success: true,
                         videos: vItems,
                         images: iItems,
                         subVideos: svItems,
                         subImages: siItems,
-                        subPosts: spItems,
-                        log: log
+                        subPosts: spItems
                     };
                     console.log("IWARA_HOME_DOM_RESULT:" + JSON.stringify(result));
+                } catch(e) {
+                    sendLog('❌ 解析过程发生致命异常: ' + e.toString());
+                    console.log("IWARA_HOME_DOM_RESULT:" + JSON.stringify({ success: false, error: e.toString() }));
                 }
-            } catch(e) {
-                console.log("IWARA_HOME_DOM_RESULT:" + JSON.stringify({ success: false, error: e.toString(), log: log }));
-            }
-        })();
+            })();
         """.trimIndent()
 
         webView.evaluateJavascript(jsCode, null)
@@ -544,11 +553,22 @@ fun HomeScreen(
     val tabs = listOf("推荐", "视频", "图片", "订阅")
     val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { tabs.size })
 
+    // 实时日志追加函数（带时间戳处理）
+    fun appendDebugLog(message: String) {
+        val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        val formattedLine = if (message.startsWith("[")) message else "[$timeStr] $message"
+        debugLog = if (debugLog.isBlank() || debugLog == "正在加载中...") {
+            "$formattedLine\n"
+        } else {
+            "$debugLog$formattedLine\n"
+        }
+        HomeMediaCache.cachedLog = debugLog
+    }
+
     fun refreshHomeContent(isRefreshAction: Boolean = false) {
         val wv = webViewRef ?: return
         if (isRefreshAction) {
             isRefreshing = true
-            // 👈 仅在手动下拉刷新时清空分类缓存
             HomeMediaCache.cachedVideoCategoryMap = null
             HomeMediaCache.cachedImageCategoryMap = null
             videoCategoryMap = emptyMap()
@@ -556,6 +576,10 @@ fun HomeScreen(
         } else {
             isLoading = true
         }
+
+        // 刷新时先清空并记录初始日志
+        debugLog = ""
+        appendDebugLog("=== 开启首页数据加载与网络诊断 ===")
 
         parseHomePageDomViaWebView(wv) { videos, images, subVideos, subImages, subPosts, logText ->
             popularVideos = videos
@@ -565,37 +589,23 @@ fun HomeScreen(
             subscriptionPosts = subPosts
 
             coroutineScope.launch {
+                val imageThumbSample = images.map { it.thumbnailUrl }
+                val avatarSample = (images + videos).map { it.authorAvatarUrl }
+                val sampleUrls = (imageThumbSample + avatarSample).filter { it.isNotEmpty() }.distinct().take(6)
+
+                // 实时流式输出网络诊断日志
+                testImageNetworkAccess(sampleUrls) { logLine ->
+                    appendDebugLog(logLine)
+                }
+
                 HomeMediaCache.cachedVideos = videos
                 HomeMediaCache.cachedImages = images
                 HomeMediaCache.cachedSubscriptions = subVideos
                 HomeMediaCache.cachedSubImages = subImages
                 HomeMediaCache.cachedSubPosts = subPosts
-                HomeMediaCache.cachedLog = logText
 
                 isLoading = false
                 isRefreshing = false
-
-                // 若是手动下拉刷新，且当前停留在“视频”或“图片”Tab，顺便同步刷一下当前 Tab 数据
-                if (isRefreshAction) {
-                    when (pagerState.currentPage) {
-                        1 -> {
-                            isVideoLoading = true
-                            fetchCategoryDataViaWebView(wv, isVideo = true) { map ->
-                                videoCategoryMap = map
-                                HomeMediaCache.cachedVideoCategoryMap = map
-                                isVideoLoading = false
-                            }
-                        }
-                        2 -> {
-                            isImageLoading = true
-                            fetchCategoryDataViaWebView(wv, isVideo = false) { map ->
-                                imageCategoryMap = map
-                                HomeMediaCache.cachedImageCategoryMap = map
-                                isImageLoading = false
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -890,6 +900,13 @@ fun HomeScreen(
                         override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
                             val msg = consoleMessage?.message() ?: ""
 
+                            // 0. 👈 监听实时流式日志
+                            if (msg.startsWith("IWARA_DEBUG_LOG:")) {
+                                val logLine = msg.removePrefix("IWARA_DEBUG_LOG:")
+                                appendDebugLog(logLine)
+                                return true
+                            }
+
                             // 1. 首页推荐数据监听
                             if (msg.startsWith("IWARA_HOME_DOM_RESULT:")) {
                                 val jsonStr = msg.removePrefix("IWARA_HOME_DOM_RESULT:")
@@ -936,9 +953,11 @@ fun HomeScreen(
                                         parseArray("subPosts", subPostList)
                                     }
 
-                                    val summaryLog = "$jsLog\n🎉 解析结果：视频 ${videoList.size}，图片 ${imageList.size}，订阅视频 ${subVideoList.size}，订阅图片 ${subImageList.size}，订阅帖子 ${subPostList.size}"
+                                    appendDebugLog("🎉 最终解析结果：热门视频 ${videoList.size}，精选图片 ${imageList.size}，订阅视频 ${subVideoList.size}，订阅图片 ${subImageList.size}，订阅帖子 ${subPostList.size}")
 
-                                    IwaraHomeActionHandler.onHomeResult?.invoke(videoList, imageList, subVideoList, subImageList, subPostList, summaryLog)
+                                    IwaraHomeActionHandler.onHomeResult?.invoke(
+                                        videoList, imageList, subVideoList, subImageList, subPostList, debugLog
+                                    )
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 }
