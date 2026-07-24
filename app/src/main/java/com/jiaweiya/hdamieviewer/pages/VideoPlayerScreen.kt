@@ -534,6 +534,7 @@ fun VideoPlayerScreen(
     // 定义动态点赞与关注状态
     var isLiked by remember { mutableStateOf(false) }
     var isFollowing by remember { mutableStateOf(false) }
+    var isFollowLoading by remember { mutableStateOf(false) }
     var showDownloadDialog by remember { mutableStateOf(false) }
 
     // 监听 videoDetail 获取后，同步初始点赞与关注状态
@@ -880,12 +881,15 @@ fun VideoPlayerScreen(
 
                         Button(
                             onClick = {
+                                if (isFollowLoading) return@Button
                                 if (!iwaraAccount.isLoggedIn) {
                                     android.widget.Toast.makeText(context, "请先登录 Iwara 账号", android.widget.Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
                                 val authorId = detail.user?.id ?: ""
                                 val authorUsername = detail.user?.username ?: detail.user?.name ?: ""
+
+                                isFollowLoading = true
 
                                 executeFollowViaWebView(
                                     webView = backgroundWebViewRef,
@@ -895,6 +899,7 @@ fun VideoPlayerScreen(
                                     token = iwaraAccount.token
                                 ) { success, logText ->
                                     debugLog += logText
+                                    isFollowLoading = false
                                     if (success) {
                                         isFollowing = !isFollowing
                                         android.widget.Toast.makeText(context, if (isFollowing) "已关注作者" else "已取消关注", android.widget.Toast.LENGTH_SHORT).show()
@@ -903,17 +908,26 @@ fun VideoPlayerScreen(
                                     }
                                 }
                             },
+                            enabled = !isFollowLoading,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isFollowing) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer
                             ),
                             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
                             modifier = Modifier.height(36.dp)
                         ) {
-                            Text(
-                                text = if (isFollowing) "已关注" else "关注",
-                                color = if (isFollowing) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimaryContainer,
-                                fontSize = 13.sp
-                            )
+                            if (isFollowLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = if (isFollowing) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimaryContainer,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(
+                                    text = if (isFollowing) "已关注" else "关注",
+                                    color = if (isFollowing) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontSize = 13.sp
+                                )
+                            }
                         }
                     }
 

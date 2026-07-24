@@ -89,7 +89,8 @@ data class IwaraMedia(
     val timeAgoStr: String = "",
     val galleryCountStr: String = "",
     val views: Int = 0,
-    val likes: Int = 0
+    val likes: Int = 0,
+    val authorUsername: String = ""
 )
 
 fun formatCount(count: Int): String {
@@ -185,16 +186,18 @@ object HomeMediaCache {
     var cachedLog: String = ""
 }
 
-// 首页 DOM 抓取回调对象
+// 全局 Log 观察者（用于 Coil 图片加载事件回调）
+object DebugLogger {
+    var onLog: ((String) -> Unit)? = null
+
+    fun log(msg: String) {
+        onLog?.invoke(msg)
+    }
+}
+
+// 首页增量/渐进式渲染回调对象
 object IwaraHomeActionHandler {
-    var onHomeResult: ((
-        videos: List<IwaraMedia>,
-        images: List<IwaraMedia>,
-        subVideos: List<IwaraMedia>,
-        subImages: List<IwaraMedia>,
-        subPosts: List<IwaraMedia>,
-        log: String
-    ) -> Unit)? = null
+    var onPartialResult: ((type: String, list: List<IwaraMedia>) -> Unit)? = null
 }
 
 // 分类数据独立回调对象
@@ -202,15 +205,8 @@ object IwaraCategoryActionHandler {
     var onCategoryResult: ((Map<String, List<IwaraMedia>>) -> Unit)? = null
 }
 
-// 终极双引擎版：在 WebView 环境内直连官方 API，带毫秒级实时日志输出
-fun parseHomePageDomViaWebView(
-    webView: WebView,
-    onResult: (videos: List<IwaraMedia>, images: List<IwaraMedia>, subVideos: List<IwaraMedia>, subImages: List<IwaraMedia>, subPosts: List<IwaraMedia>, log: String) -> Unit
-) {
-    IwaraHomeActionHandler.onHomeResult = { videos, images, subVideos, subImages, subPosts, logText ->
-        onResult(videos, images, subVideos, subImages, subPosts, logText)
-    }
-
+// 极速渐进式版：独立并发请求，加载多少就先显示多少
+fun parseHomePageDomViaWebView(webView: WebView) {
     webView.loadUrl("https://www.iwara.tv/")
 
     webView.postDelayed({
@@ -222,158 +218,144 @@ fun parseHomePageDomViaWebView(
                     console.log("IWARA_DEBUG_LOG:[" + timeStr + "] " + msg);
                 }
 
-                sendLog('=== 1. WebView 内存 API 节点抓取开始 ===');
-                try {
-                    let token = localStorage.getItem('token') || localStorage.getItem('access_token') || '';
-                    if (token) {
-                        sendLog('• 本地 Token 状态: 已加载 (前10位: ' + token.substring(0, 10) + '...)');
-                    } else {
-                        sendLog('• 本地 Token 状态: ⚠️ 未登录/未找到 Token (订阅内容将跳过)');
+                sendLog('=== 1. 开启渐进式 API 并发极速抓取 ===');
+                let token = localStorage.getItem('token') || localStorage.getItem('access_token') || '';
+                sendLog('• Token 状态: ' + (token ? '已加载 (Bearer ' + token.substring(0, 10) + '...)' : '⚠️ 未登录/无 Token'));
+
+                let headers = { 'Accept': 'application/json, text/plain, */*' };
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+
+                function emitPartial(type, items) {
+                    console.log("IWARA_HOME_PARTIAL_RESULT:" + JSON.stringify({ type: type, data: items }));
+                }
+
+                function formatCount(num) {
+                    if (!num) return '0';
+                    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+                    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+                    return num.toString();
+                }
+                function formatDur(sec) {
+                    if (!sec) return '';
+                    let m = Math.floor(sec / 60);
+                    let s = Math.floor(sec % 60);
+                    return m + ':' + (s < 10 ? '0' : '') + s;
+                }
+                function formatAvatar(u) {
+                    if (!u || !u.avatar) return '';
+                    let a = u.avatar;
+                    let id = a.id || '';
+                    let name = a.name || '';
+                    if (id && name) return 'https://files.iwara.tv/image/avatar/' + id + '/' + name;
+                    if (id) return 'https://files.iwara.tv/image/avatar/' + id + '/avatar.jpg';
+                    return '';
+                }
+                function formatImageThumb(item) {
+                    if (!item) return '';
+                    let t = item.thumbnail || item.file || (item.files && item.files[0] ? item.files[0] : null);
+                    if (!t) return '';
+                    let id = typeof t === 'object' ? (t.id || '') : t;
+                    let name = typeof t === 'object' ? (t.name || (id + '.jpg')) : (id + '.jpg');
+                    if (id) return 'https://files.iwara.tv/image/thumbnail/' + id + '/' + name;
+                    return '';
+                }
+                function formatVideoThumb(item) {
+                    if (!item || !item.file) return '';
+                    let fileId = item.file.id || '';
+                    let thumbId = item.thumbnail !== undefined && item.thumbnail !== null ? String(item.thumbnail).padStart(2, '0') : '00';
+                    return 'https://files.iwara.tv/image/thumbnail/' + fileId + '/thumbnail-' + thumbId + '.jpg';
+                }
+                function formatGalleryCount(item) {
+                    if (!item) return '';
+                    let count = 0;
+                    if (item.numImages !== undefined && item.numImages !== null) count = Number(item.numImages);
+                    else if (Array.isArray(item.files)) count = item.files.length;
+                    else if (item.numFiles !== undefined && item.numFiles !== null) count = Number(item.numFiles);
+                    return Number.isFinite(count) && count > 1 ? String(count) : '';
+                }
+
+                function parseApiList(list, typeName) {
+                    if (!list || !Array.isArray(list)) return [];
+                    return list.map(item => {
+                        let isImage = (typeName && typeName.includes('图片')) || item.type === 'image';
+                        let thumb = isImage ? formatImageThumb(item) : formatVideoThumb(item);
+                        let u = item.user || {};
+                        return {
+                            id: item.id,
+                            title: item.title,
+                            thumbnailUrl: thumb,
+                            authorName: u.name || u.username || 'i站作者',
+                            authorAvatarUrl: formatAvatar(u),
+                            authorUsername: u.username || u.name || '',
+                            viewsStr: formatCount(item.numViews),
+                            likesStr: formatCount(item.numLikes),
+                            durationStr: formatDur(item.duration),
+                            ratingStr: (item.rating === 'ecchi') ? 'R-18' : '',
+                            timeAgoStr: item.createdAt ? (new Date(item.createdAt).toLocaleDateString()) : '',
+                            galleryCountStr: formatGalleryCount(item)
+                        };
+                    });
+                }
+
+                function parsePostList(list) {
+                    if (!list || !Array.isArray(list)) return [];
+                    return list.map(item => {
+                        let u = item.user || {};
+                        return {
+                            id: item.id,
+                            title: item.title || item.body || '帖子内容',
+                            thumbnailUrl: '',
+                            authorName: u.name || u.username || 'i站作者',
+                            authorAvatarUrl: formatAvatar(u),
+                            authorUsername: u.username || u.name || '',
+                            viewsStr: item.numComments ? (item.numComments + ' 评论') : '',
+                            likesStr: formatCount(item.numLikes),
+                            durationStr: '',
+                            ratingStr: '',
+                            timeAgoStr: item.createdAt ? (new Date(item.createdAt).toLocaleDateString()) : '',
+                            galleryCountStr: ''
+                        };
+                    });
+                }
+
+                async function fetchAndLog(url, name, typeKey, isPost) {
+                    let startTime = Date.now();
+                    sendLog('• 发起 [' + name + '] 请求: GET ' + url);
+                    try {
+                        let r = await fetch(url, { headers });
+                        let duration = Date.now() - startTime;
+                        if (!r.ok) {
+                            sendLog('❌ [' + name + '] 响应错误: HTTP ' + r.status + ' (耗时 ' + duration + 'ms)');
+                            return;
+                        }
+                        let data = await r.json();
+                        let results = data ? (data.results || []) : [];
+                        let parsed = isPost ? parsePostList(results) : parseApiList(results, name);
+                        sendLog('🎉 [' + name + '] 成功: HTTP 200 (耗时 ' + duration + 'ms, 共 ' + parsed.length + ' 条)');
+                        if (parsed.length > 0) {
+                            if (parsed[0].thumbnailUrl) sendLog('   📷 [#1 样例封面]: ' + parsed[0].thumbnailUrl);
+                            if (parsed[0].authorAvatarUrl) sendLog('   👤 [#1 样例头像]: ' + parsed[0].authorAvatarUrl);
+                        }
+                        emitPartial(typeKey, parsed);
+                    } catch(e) {
+                        sendLog('❌ [' + name + '] 网络发生捕获异常: ' + e);
                     }
+                }
 
-                    let headers = { 'Accept': 'application/json, text/plain, */*' };
-                    if (token) headers['Authorization'] = 'Bearer ' + token;
+                // 独立并发拉取 5 大接口
+                fetchAndLog('https://api.iwara.tv/videos?sort=trending&limit=12', '热门视频', 'videos', false);
+                fetchAndLog('https://api.iwara.tv/images?sort=trending&limit=12', '精选图片', 'images', false);
 
-                    sendLog('• 正在并发请求 API (/videos, /images)...');
-
-                    // 1. 请求公共列表 API
-                    let vRes = await fetch('https://api.iwara.tv/videos?sort=trending&limit=12', { headers }).catch(e => { sendLog('❌ 请求 /videos 异常: ' + e); return null; });
-                    if (vRes) sendLog('  -> API /videos 响应: HTTP ' + vRes.status);
-
-                    let iRes = await fetch('https://api.iwara.tv/images?sort=trending&limit=12', { headers }).catch(e => { sendLog('❌ 请求 /images 异常: ' + e); return null; });
-                    if (iRes) sendLog('  -> API /images 响应: HTTP ' + iRes.status);
-
-                    // 2. 根据登录状态请求订阅列表 API
-                    let svRes = null, siRes = null, spRes = null;
-                    if (token) {
-                        sendLog('• 正在请求订阅内容 API (/videos, /images, /posts)...');
-                        svRes = await fetch('https://api.iwara.tv/videos?subscribed=true&limit=6', { headers }).catch(e => null);
-                        siRes = await fetch('https://api.iwara.tv/images?subscribed=true&limit=6', { headers }).catch(e => null);
-                        spRes = await fetch('https://api.iwara.tv/posts?subscribed=true&limit=6', { headers }).catch(e => null);
-                        if (svRes) sendLog('  -> API 订阅视频 响应: HTTP ' + svRes.status);
-                        if (siRes) sendLog('  -> API 订阅图片 响应: HTTP ' + siRes.status);
-                        if (spRes) sendLog('  -> API 订阅帖子 响应: HTTP ' + spRes.status);
-                    }
-
-                    let vData = (vRes && vRes.ok) ? await vRes.json() : { results: [] };
-                    let iData = (iRes && iRes.ok) ? await iRes.json() : { results: [] };
-                    let svData = (svRes && svRes.ok) ? await svRes.json() : { results: [] };
-                    let siData = (siRes && siRes.ok) ? await siRes.json() : { results: [] };
-                    let spData = (spRes && spRes.ok) ? await spRes.json() : { results: [] };
-
-                    function formatCount(num) {
-                        if (!num) return '0';
-                        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-                        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-                        return num.toString();
-                    }
-                    function formatDur(sec) {
-                        if (!sec) return '';
-                        let m = Math.floor(sec / 60);
-                        let s = Math.floor(sec % 60);
-                        return m + ':' + (s < 10 ? '0' : '') + s;
-                    }
-                    function formatAvatar(u) {
-                        if (!u || !u.avatar) return '';
-                        let a = u.avatar;
-                        let id = a.id || '';
-                        let name = a.name || '';
-                        if (id && name) return 'https://files.iwara.tv/image/avatar/' + id + '/' + name;
-                        if (id) return 'https://files.iwara.tv/image/avatar/' + id + '/avatar.jpg';
-                        return '';
-                    }
-                    function formatImageThumb(item) {
-                        if (!item) return '';
-                        let t = item.thumbnail || item.file || (item.files && item.files[0] ? item.files[0] : null);
-                        if (!t) return '';
-                        let id = typeof t === 'object' ? (t.id || '') : t;
-                        let name = typeof t === 'object' ? (t.name || (id + '.jpg')) : (id + '.jpg');
-                        if (id) return 'https://files.iwara.tv/image/thumbnail/' + id + '/' + name;
-                        return '';
-                    }
-                    function formatVideoThumb(item) {
-                        if (!item || !item.file) return '';
-                        let fileId = item.file.id || '';
-                        let thumbId = item.thumbnail !== undefined && item.thumbnail !== null ? String(item.thumbnail).padStart(2, '0') : '00';
-                        return 'https://files.iwara.tv/image/thumbnail/' + fileId + '/thumbnail-' + thumbId + '.jpg';
-                    }
-                    function formatGalleryCount(item) {
-                        if (!item) return '';
-                        let count = 0;
-                        if (item.numImages !== undefined && item.numImages !== null) count = Number(item.numImages);
-                        else if (Array.isArray(item.files)) count = item.files.length;
-                        else if (item.numFiles !== undefined && item.numFiles !== null) count = Number(item.numFiles);
-                        return Number.isFinite(count) && count > 1 ? String(count) : '';
-                    }
-
-                    function parseApiList(list, typeName) {
-                        if (!list || !Array.isArray(list)) return [];
-                        return list.map(item => {
-                            let isImage = (typeName && typeName.includes('图片')) || item.type === 'image';
-                            let thumb = isImage ? formatImageThumb(item) : formatVideoThumb(item);
-                            let u = item.user || {};
-                            return {
-                                id: item.id,
-                                title: item.title,
-                                thumbnailUrl: thumb,
-                                authorName: u.name || u.username || 'i站作者',
-                                authorAvatarUrl: formatAvatar(u),
-                                viewsStr: formatCount(item.numViews),
-                                likesStr: formatCount(item.numLikes),
-                                durationStr: formatDur(item.duration),
-                                ratingStr: (item.rating === 'ecchi') ? 'R-18' : '',
-                                timeAgoStr: item.createdAt ? (new Date(item.createdAt).toLocaleDateString()) : '',
-                                galleryCountStr: formatGalleryCount(item)
-                            };
-                        });
-                    }
-
-                    function parsePostList(list) {
-                        if (!list || !Array.isArray(list)) return [];
-                        return list.map(item => {
-                            let u = item.user || {};
-                            return {
-                                id: item.id,
-                                title: item.title || item.body || '帖子内容',
-                                thumbnailUrl: '',
-                                authorName: u.name || u.username || 'i站作者',
-                                authorAvatarUrl: formatAvatar(u),
-                                viewsStr: item.numComments ? (item.numComments + ' 评论') : '',
-                                likesStr: formatCount(item.numLikes),
-                                durationStr: '',
-                                ratingStr: '',
-                                timeAgoStr: item.createdAt ? (new Date(item.createdAt).toLocaleDateString()) : '',
-                                galleryCountStr: ''
-                            };
-                        });
-                    }
-
-                    let vItems = parseApiList(vData.results, '热门视频');
-                    let iItems = parseApiList(iData.results, '精选图片');
-                    let svItems = parseApiList(svData.results, '订阅视频');
-                    let siItems = parseApiList(siData.results, '订阅图片');
-                    let spItems = parsePostList(spData.results);
-
-                    sendLog('🎉 JSON 格式化完成：热门视频 ' + vItems.length + ' 条, 精选图片 ' + iItems.length + ' 条, 订阅视频 ' + svItems.length + ' 条');
-
-                    let result = {
-                        success: true,
-                        videos: vItems,
-                        images: iItems,
-                        subVideos: svItems,
-                        subImages: siItems,
-                        subPosts: spItems
-                    };
-                    console.log("IWARA_HOME_DOM_RESULT:" + JSON.stringify(result));
-                } catch(e) {
-                    sendLog('❌ 解析过程发生致命异常: ' + e.toString());
-                    console.log("IWARA_HOME_DOM_RESULT:" + JSON.stringify({ success: false, error: e.toString() }));
+                if (token) {
+                    fetchAndLog('https://api.iwara.tv/videos?subscribed=true&limit=6', '订阅视频', 'subVideos', false);
+                    fetchAndLog('https://api.iwara.tv/images?subscribed=true&limit=6', '订阅图片', 'subImages', false);
+                    fetchAndLog('https://api.iwara.tv/posts?subscribed=true&limit=6', '订阅帖子', 'subPosts', true);
                 }
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(jsCode, null)
-    }, 1200)
+    }, 200)
 }
 
 // 按分类懒加载数据（视频/图片）：通过 WebView 拉取 i 站分类页面并解析
@@ -506,6 +488,7 @@ fun fetchCategoryDataViaWebView(
 fun HomeScreen(
     onOpenDrawer: () -> Unit,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {},
     onNavigateToSearchResults: (String, String, String) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -577,37 +560,40 @@ fun HomeScreen(
             isLoading = true
         }
 
-        // 刷新时先清空并记录初始日志
+        DebugLogger.onLog = { msg -> appendDebugLog(msg) }
+
         debugLog = ""
-        appendDebugLog("=== 开启首页数据加载与网络诊断 ===")
+        appendDebugLog("=== 开启首页极速渐进式渲染 ===")
 
-        parseHomePageDomViaWebView(wv) { videos, images, subVideos, subImages, subPosts, logText ->
-            popularVideos = videos
-            popularImages = images
-            subscriptionVideos = subVideos
-            subscriptionImages = subImages
-            subscriptionPosts = subPosts
-
-            coroutineScope.launch {
-                val imageThumbSample = images.map { it.thumbnailUrl }
-                val avatarSample = (images + videos).map { it.authorAvatarUrl }
-                val sampleUrls = (imageThumbSample + avatarSample).filter { it.isNotEmpty() }.distinct().take(6)
-
-                // 实时流式输出网络诊断日志
-                testImageNetworkAccess(sampleUrls) { logLine ->
-                    appendDebugLog(logLine)
+        IwaraHomeActionHandler.onPartialResult = { type, list ->
+            when (type) {
+                "videos" -> {
+                    popularVideos = list
+                    HomeMediaCache.cachedVideos = list
+                    // ⚡ 核心：热门视频最先到达时，立即关闭全局转圈，首屏画面瞬间出来！
+                    isLoading = false
+                    isRefreshing = false
                 }
-
-                HomeMediaCache.cachedVideos = videos
-                HomeMediaCache.cachedImages = images
-                HomeMediaCache.cachedSubscriptions = subVideos
-                HomeMediaCache.cachedSubImages = subImages
-                HomeMediaCache.cachedSubPosts = subPosts
-
-                isLoading = false
-                isRefreshing = false
+                "images" -> {
+                    popularImages = list
+                    HomeMediaCache.cachedImages = list
+                }
+                "subVideos" -> {
+                    subscriptionVideos = list
+                    HomeMediaCache.cachedSubscriptions = list
+                }
+                "subImages" -> {
+                    subscriptionImages = list
+                    HomeMediaCache.cachedSubImages = list
+                }
+                "subPosts" -> {
+                    subscriptionPosts = list
+                    HomeMediaCache.cachedSubPosts = list
+                }
             }
         }
+
+        parseHomePageDomViaWebView(wv)
     }
 
     LaunchedEffect(isWebViewReady) {
@@ -734,6 +720,7 @@ fun HomeScreen(
                                     subscriptionVideos = subscriptionVideos,
                                     isLoggedIn = iwaraAccount.isLoggedIn,
                                     onVideoClick = onVideoClick,
+                                    onAuthorClick = onAuthorClick,
                                     onShowDebugDialog = { showDebugDialog = true },
                                     scrollState = scrollState
                                 )
@@ -744,6 +731,7 @@ fun HomeScreen(
                                     categoryMap = videoCategoryMap,
                                     isLoading = isVideoLoading,
                                     onVideoClick = onVideoClick,
+                                    onAuthorClick = onAuthorClick,
                                     onMoreClick = { sortKey ->
                                         onNavigateToSearchResults("", "videos", sortKey)
                                     }
@@ -755,6 +743,7 @@ fun HomeScreen(
                                     categoryMap = imageCategoryMap,
                                     isLoading = isImageLoading,
                                     onVideoClick = onVideoClick,
+                                    onAuthorClick = onAuthorClick,
                                     onMoreClick = { sortKey ->
                                         onNavigateToSearchResults("", "images", sortKey)
                                     }
@@ -766,8 +755,9 @@ fun HomeScreen(
                                     subscriptionVideos = subscriptionVideos,
                                     subscriptionImages = subscriptionImages,
                                     subscriptionPosts = subscriptionPosts,
-                                    isLoading = isLoading || isRefreshing, // 👈 传递全局加载/刷新状态
+                                    isLoading = isLoading || isRefreshing,
                                     onVideoClick = onVideoClick,
+                                    onAuthorClick = onAuthorClick,
                                     onMoreClick = { subPath ->
                                         onNavigateToSearchResults("", subPath, "date")
                                     }
@@ -778,6 +768,24 @@ fun HomeScreen(
                 }
 
                 VerticalScrollbar(scrollState = scrollState)
+            }
+
+            FloatingActionButton(
+                onClick = { showDebugDialog = true },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 24.dp),
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Text("调试日志", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
@@ -900,71 +908,49 @@ fun HomeScreen(
                         override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
                             val msg = consoleMessage?.message() ?: ""
 
-                            // 0. 👈 监听实时流式日志
                             if (msg.startsWith("IWARA_DEBUG_LOG:")) {
-                                val logLine = msg.removePrefix("IWARA_DEBUG_LOG:")
-                                appendDebugLog(logLine)
+                                appendDebugLog(msg.removePrefix("IWARA_DEBUG_LOG:"))
                                 return true
                             }
 
-                            // 1. 首页推荐数据监听
-                            if (msg.startsWith("IWARA_HOME_DOM_RESULT:")) {
-                                val jsonStr = msg.removePrefix("IWARA_HOME_DOM_RESULT:")
+                            // 1. 首页增量/渐进式结果监听
+                            if (msg.startsWith("IWARA_HOME_PARTIAL_RESULT:")) {
+                                val jsonStr = msg.removePrefix("IWARA_HOME_PARTIAL_RESULT:")
                                 try {
                                     val jsonObj = com.google.gson.JsonParser.parseString(jsonStr).asJsonObject
-                                    val isSuccess = jsonObj.get("success")?.asBoolean ?: false
-                                    val jsLog = jsonObj.get("log")?.asString ?: ""
+                                    val type = jsonObj.get("type").asString
+                                    val arr = jsonObj.getAsJsonArray("data")
 
-                                    val videoList = mutableListOf<IwaraMedia>()
-                                    val imageList = mutableListOf<IwaraMedia>()
-                                    val subVideoList = mutableListOf<IwaraMedia>()
-                                    val subImageList = mutableListOf<IwaraMedia>()
-                                    val subPostList = mutableListOf<IwaraMedia>()
-
-                                    fun parseArray(key: String, targetList: MutableList<IwaraMedia>) {
-                                        if (jsonObj.has(key) && jsonObj.get(key).isJsonArray) {
-                                            val arr = jsonObj.getAsJsonArray(key)
-                                            arr.forEach { element ->
-                                                val obj = element.asJsonObject
-                                                targetList.add(
-                                                    IwaraMedia(
-                                                        id = obj.get("id").asString,
-                                                        title = obj.get("title").asString,
-                                                        thumbnailUrl = obj.get("thumbnailUrl").asString,
-                                                        authorName = obj.get("authorName").asString,
-                                                        authorAvatarUrl = obj.get("authorAvatarUrl")?.asString ?: "",
-                                                        viewsStr = obj.get("viewsStr")?.asString ?: "",
-                                                        likesStr = obj.get("likesStr")?.asString ?: "",
-                                                        durationStr = obj.get("durationStr")?.asString ?: "",
-                                                        ratingStr = obj.get("ratingStr")?.asString ?: "",
-                                                        timeAgoStr = obj.get("timeAgoStr")?.asString ?: "",
-                                                        galleryCountStr = obj.get("galleryCountStr")?.asString ?: ""
-                                                    )
-                                                )
-                                            }
-                                        }
+                                    val list = mutableListOf<IwaraMedia>()
+                                    arr.forEach { element ->
+                                        val obj = element.asJsonObject
+                                        list.add(
+                                            IwaraMedia(
+                                                id = obj.get("id").asString,
+                                                title = obj.get("title").asString,
+                                                thumbnailUrl = obj.get("thumbnailUrl").asString,
+                                                authorName = obj.get("authorName").asString,
+                                                authorAvatarUrl = obj.get("authorAvatarUrl")?.asString ?: "",
+                                                authorUsername = obj.get("authorUsername")?.asString ?: "",
+                                                viewsStr = obj.get("viewsStr")?.asString ?: "",
+                                                likesStr = obj.get("likesStr")?.asString ?: "",
+                                                durationStr = obj.get("durationStr")?.asString ?: "",
+                                                ratingStr = obj.get("ratingStr")?.asString ?: "",
+                                                timeAgoStr = obj.get("timeAgoStr")?.asString ?: "",
+                                                galleryCountStr = obj.get("galleryCountStr")?.asString ?: ""
+                                            )
+                                        )
                                     }
 
-                                    if (isSuccess) {
-                                        parseArray("videos", videoList)
-                                        parseArray("images", imageList)
-                                        parseArray("subVideos", subVideoList)
-                                        parseArray("subImages", subImageList)
-                                        parseArray("subPosts", subPostList)
-                                    }
-
-                                    appendDebugLog("🎉 最终解析结果：热门视频 ${videoList.size}，精选图片 ${imageList.size}，订阅视频 ${subVideoList.size}，订阅图片 ${subImageList.size}，订阅帖子 ${subPostList.size}")
-
-                                    IwaraHomeActionHandler.onHomeResult?.invoke(
-                                        videoList, imageList, subVideoList, subImageList, subPostList, debugLog
-                                    )
+                                    IwaraHomeActionHandler.onPartialResult?.invoke(type, list)
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 }
                                 return true
                             }
-                            // 2. 5 大分类数据监听 (语法对齐修复)
-                            else if (msg.startsWith("IWARA_CATEGORY_RESULT:")) {
+
+                            // 2. 👈 补回：视频与图片 Tab 分类 API 结果监听
+                            if (msg.startsWith("IWARA_CATEGORY_RESULT:")) {
                                 val jsonStr = msg.removePrefix("IWARA_CATEGORY_RESULT:")
                                 try {
                                     val jsonObj = com.google.gson.JsonParser.parseString(jsonStr).asJsonObject
@@ -982,6 +968,7 @@ fun HomeScreen(
                                                     thumbnailUrl = obj.get("thumbnailUrl").asString,
                                                     authorName = obj.get("authorName").asString,
                                                     authorAvatarUrl = obj.get("authorAvatarUrl")?.asString ?: "",
+                                                    authorUsername = obj.get("authorUsername")?.asString ?: "",
                                                     viewsStr = obj.get("viewsStr")?.asString ?: "",
                                                     likesStr = obj.get("likesStr")?.asString ?: "",
                                                     durationStr = obj.get("durationStr")?.asString ?: "",
@@ -993,7 +980,7 @@ fun HomeScreen(
                                             resultMap[sortKey] = mediaList
                                         }
 
-                                        // 触发 Kotlin 回调更新组件状态
+                                        DebugLogger.log("🎉 分类 API 数据抓取完成，刷新 UI")
                                         IwaraCategoryActionHandler.onCategoryResult?.invoke(resultMap)
                                     }
                                 } catch (e: Exception) {
@@ -1001,6 +988,7 @@ fun HomeScreen(
                                 }
                                 return true
                             }
+
                             return super.onConsoleMessage(consoleMessage)
                         }
                     }
@@ -1061,6 +1049,7 @@ private fun RecommendTabPage(
     subscriptionVideos: List<IwaraMedia>,
     isLoggedIn: Boolean,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {}, // 👈 补上参数
     onShowDebugDialog: () -> Unit,
     scrollState: ScrollState
 ) {
@@ -1071,66 +1060,48 @@ private fun RecommendTabPage(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. 顶部精选大卡片 (占用第 1 个视频)
         val featuredVideo = popularVideos.firstOrNull()
         if (featuredVideo != null) {
             FeaturedCard(
                 mediaItem = featuredVideo,
-                onVideoClick = onVideoClick
+                onVideoClick = onVideoClick,
+                onAuthorClick = onAuthorClick // 👈 传递
             )
         } else {
             FeaturedCardPlaceholder()
         }
 
-        // 2. 热门视频推荐 (跳过第 1 个视频，精准取接下来的 6 个，填满 2x3 网格)
         val gridVideos = popularVideos.drop(1).take(6)
         if (gridVideos.isNotEmpty()) {
             MediaGridSection(
                 title = "热门视频推荐",
                 mediaList = gridVideos,
                 isVideo = true,
-                onVideoClick = onVideoClick
+                onVideoClick = onVideoClick,
+                onAuthorClick = onAuthorClick // 👈 传递
             )
         }
 
-        // 3. 精选图片推荐 (限制显示前 6 条)
         val gridImages = popularImages.take(6)
         if (gridImages.isNotEmpty()) {
             MediaGridSection(
                 title = "精选图片推荐",
                 mediaList = gridImages,
                 isVideo = false,
-                onVideoClick = {}
+                onVideoClick = {},
+                onAuthorClick = onAuthorClick // 👈 传递
             )
         }
 
-        // 4. 最新订阅 (已登录用户显示前 6 条)
         val gridSubs = subscriptionVideos.take(6)
         if (isLoggedIn && gridSubs.isNotEmpty()) {
             MediaGridSection(
                 title = "最新订阅",
                 mediaList = gridSubs,
                 isVideo = true,
-                onVideoClick = onVideoClick
+                onVideoClick = onVideoClick,
+                onAuthorClick = onAuthorClick // 👈 传递
             )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // 放置在页面最下方的调试日志按钮
-        OutlinedButton(
-            onClick = onShowDebugDialog,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Icon(
-                imageVector = Icons.Default.BugReport,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("查看并复制 DOM 解析调试日志", fontSize = 13.sp)
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -1144,6 +1115,7 @@ private fun CategoryMediaTabContent(
     categoryMap: Map<String, List<IwaraMedia>>,
     isLoading: Boolean,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {},
     onMoreClick: (sortKey: String) -> Unit
 ) {
     val typeName = if (isVideo) "视频" else "图片"
@@ -1221,6 +1193,7 @@ private fun CategoryMediaTabContent(
                                         mediaItem = item,
                                         isVideo = isVideo,
                                         onVideoClick = onVideoClick,
+                                        onAuthorClick = onAuthorClick,
                                         modifier = Modifier.weight(1f)
                                     )
                                 } else {
@@ -1244,8 +1217,9 @@ private fun SubscriptionTabPage(
     subscriptionVideos: List<IwaraMedia>,
     subscriptionImages: List<IwaraMedia>,
     subscriptionPosts: List<IwaraMedia>,
-    isLoading: Boolean, // 👈 增加 isLoading 参数
+    isLoading: Boolean,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {},
     onMoreClick: (subPath: String) -> Unit
 ) {
     Column(
@@ -1299,6 +1273,7 @@ private fun SubscriptionTabPage(
                                     mediaItem = item,
                                     isVideo = true,
                                     onVideoClick = onVideoClick,
+                                    onAuthorClick = onAuthorClick,
                                     modifier = Modifier.weight(1f)
                                 )
                             } else {
@@ -1339,6 +1314,7 @@ private fun SubscriptionTabPage(
                                     mediaItem = item,
                                     isVideo = false,
                                     onVideoClick = onVideoClick,
+                                    onAuthorClick = onAuthorClick,
                                     modifier = Modifier.weight(1f)
                                 )
                             } else {
@@ -1561,7 +1537,43 @@ fun FeaturedCard(
     mediaItem: IwaraMedia,
     modifier: Modifier = Modifier,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val fixedThumbUrl = remember(mediaItem.thumbnailUrl) { fixImageUrl(mediaItem.thumbnailUrl) }
+
+    val cookie = remember {
+        android.webkit.CookieManager.getInstance().getCookie("https://www.iwara.tv") ?: ""
+    }
+
+    // 👈 核心修复：补全 CDN 直连域名替换、防盗链 Referer 与 Cookie 标头
+    val thumbRequest = remember(fixedThumbUrl, cookie) {
+        if (fixedThumbUrl.isNotEmpty()) {
+            coil.request.ImageRequest.Builder(context)
+                .data(fixedThumbUrl)
+                .crossfade(true)
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+                .addHeader("Referer", "https://www.iwara.tv/")
+                .apply { if (cookie.isNotEmpty()) addHeader("Cookie", cookie) }
+                .listener(
+                    onStart = {
+                        val shortUrl = fixedThumbUrl.takeLast(45)
+                        DebugLogger.log("🖼️ [大卡片封面发起] ...$shortUrl")
+                    },
+                    onSuccess = { _, result ->
+                        val shortUrl = fixedThumbUrl.takeLast(45)
+                        DebugLogger.log("🎉 [大卡片封面成功] ...$shortUrl (来源:${result.dataSource})")
+                    },
+                    onError = { _, result ->
+                        val shortUrl = fixedThumbUrl.takeLast(45)
+                        val err = result.throwable.localizedMessage ?: result.throwable.message ?: "未知"
+                        DebugLogger.log("❌ [大卡片封面失败] ...$shortUrl (原因:$err)")
+                    }
+                )
+                .build()
+        } else null
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -1570,9 +1582,9 @@ fun FeaturedCard(
         shape = RoundedCornerShape(16.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            if (mediaItem.thumbnailUrl.isNotEmpty()) {
+            if (thumbRequest != null) {
                 AsyncImage(
-                    model = mediaItem.thumbnailUrl,
+                    model = thumbRequest,
                     contentDescription = mediaItem.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -1625,9 +1637,13 @@ fun FeaturedCard(
                     )
                     Text(
                         text = "作者: ${mediaItem.authorName}",
-                        color = Color.White.copy(alpha = 0.7f),
+                        color = Color.White.copy(alpha = 0.8f),
                         fontSize = 12.sp,
-                        maxLines = 1
+                        maxLines = 1,
+                        modifier = Modifier.clickable {
+                            val handle = mediaItem.authorUsername.ifEmpty { mediaItem.authorName }
+                            if (handle.isNotEmpty()) onAuthorClick(handle)
+                        }
                     )
                 }
             }
@@ -1664,6 +1680,7 @@ fun MediaGridSection(
     mediaList: List<IwaraMedia>,
     isVideo: Boolean,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {}, // 👈 补上参数
     modifier: Modifier = Modifier
 ) {
     if (mediaList.isEmpty()) return
@@ -1691,6 +1708,7 @@ fun MediaGridSection(
                             mediaItem = mediaItem,
                             isVideo = isVideo,
                             onVideoClick = onVideoClick,
+                            onAuthorClick = onAuthorClick, // 👈 传递 onAuthorClick
                             modifier = Modifier.weight(1f)
                         )
                     } else {
@@ -1707,6 +1725,9 @@ fun MediaItemCard(
     mediaItem: IwaraMedia,
     isVideo: Boolean,
     onVideoClick: (String) -> Unit,
+    onAuthorClick: (String) -> Unit = {},
+    isFastScrolling: Boolean = false,
+    inPreloadZone: Boolean = true, // 👈 新增：是否处于 1.5 屏幕预加载缓冲区
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1714,43 +1735,50 @@ fun MediaItemCard(
     val fixedThumbUrl = remember(mediaItem.thumbnailUrl) { fixImageUrl(mediaItem.thumbnailUrl) }
     val fixedAvatarUrl = remember(mediaItem.authorAvatarUrl) { fixImageUrl(mediaItem.authorAvatarUrl) }
 
-    // 提取系统 WebView 共享的 Cookie
     val cookie = remember {
         android.webkit.CookieManager.getInstance().getCookie("https://www.iwara.tv") ?: ""
     }
 
-    // 带防盗链 + Cookie 的封面 Request
-    val thumbRequest = remember(fixedThumbUrl, cookie) {
-        if (fixedThumbUrl.isNotEmpty()) {
+    // 👈 核心修改：仅当在 1.5 屏幕缓冲区内才加载；快速滑动时关闭网络请求，仅读取 Disk/Memory 本地缓存
+    val thumbRequest = remember(fixedThumbUrl, cookie, isFastScrolling, inPreloadZone) {
+        if (inPreloadZone && fixedThumbUrl.isNotEmpty()) {
             coil.request.ImageRequest.Builder(context)
                 .data(fixedThumbUrl)
                 .crossfade(true)
-                .addHeader(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                )
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
                 .addHeader("Referer", "https://www.iwara.tv/")
-                .apply {
-                    if (cookie.isNotEmpty()) addHeader("Cookie", cookie)
-                }
+                .apply { if (cookie.isNotEmpty()) addHeader("Cookie", cookie) }
+                .networkCachePolicy(
+                    if (isFastScrolling) coil.request.CachePolicy.DISABLED else coil.request.CachePolicy.ENABLED
+                )
                 .build()
         } else null
     }
 
-    // 带防盗链 + Cookie 的头像 Request
+    // 2. 带详细日志监听的头像 Request
     val avatarRequest = remember(fixedAvatarUrl, cookie) {
         if (fixedAvatarUrl.isNotEmpty()) {
             coil.request.ImageRequest.Builder(context)
                 .data(fixedAvatarUrl)
                 .crossfade(true)
-                .addHeader(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                )
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
                 .addHeader("Referer", "https://www.iwara.tv/")
-                .apply {
-                    if (cookie.isNotEmpty()) addHeader("Cookie", cookie)
-                }
+                .apply { if (cookie.isNotEmpty()) addHeader("Cookie", cookie) }
+                .listener(
+                    onStart = {
+                        val shortUrl = fixedAvatarUrl.takeLast(45)
+                        DebugLogger.log("👤 [头像发起] ...$shortUrl")
+                    },
+                    onSuccess = { _, result ->
+                        val shortUrl = fixedAvatarUrl.takeLast(45)
+                        DebugLogger.log("🎉 [头像成功] ...$shortUrl (来源:${result.dataSource})")
+                    },
+                    onError = { _, result ->
+                        val shortUrl = fixedAvatarUrl.takeLast(45)
+                        val err = result.throwable.localizedMessage ?: result.throwable.message ?: "未知"
+                        DebugLogger.log("❌ [头像失败] ...$shortUrl (原因:$err)")
+                    }
+                )
                 .build()
         } else null
     }
@@ -1909,7 +1937,11 @@ fun MediaItemCard(
         // 作者头像、名字与时间
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.clickable {
+                val handle = mediaItem.authorUsername.ifEmpty { mediaItem.authorName }
+                if (handle.isNotEmpty()) onAuthorClick(handle)
+            }
         ) {
             if (avatarRequest != null) {
                 AsyncImage(

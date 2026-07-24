@@ -336,6 +336,9 @@ class MainActivity : ComponentActivity() {
                                     onVideoClick = { videoId ->
                                         navController.navigate("Player/$videoId")
                                     },
+                                    onAuthorClick = { username ->
+                                        navController.navigate("Profile/$username")
+                                    },
                                     onNavigateToSearchResults = { query, type, sort ->
                                         navController.navigate("SearchResults/$query/$type/$sort")
                                     }
@@ -512,6 +515,28 @@ class MainActivity : ComponentActivity() {
                                     onBackClick = { navController.popBackStack() },
                                     onVideoClick = { videoId ->
                                         navController.navigate("Player/$videoId")
+                                    }
+                                )
+                            }
+
+                            // 注册作者主页路由
+                            composable(
+                                route = "Profile/{username}",
+                                arguments = listOf(navArgument("username") { type = NavType.StringType }),
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) { backStackEntry ->
+                                val username = backStackEntry.arguments?.getString("username") ?: ""
+                                com.jiaweiya.hdamieviewer.iwara.IwaraProfilePage(
+                                    username = username,
+                                    onBackClick = { navController.popBackStack() },
+                                    onVideoClick = { videoId ->
+                                        navController.navigate("Player/$videoId")
+                                    },
+                                    onAuthorClick = { newUsername ->
+                                        if (newUsername != username) {
+                                            navController.navigate("Profile/$newUsername")
+                                        }
                                     }
                                 )
                             }
