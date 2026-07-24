@@ -154,6 +154,8 @@ fun SettingsPage(
     var activeDownloadPath by remember { mutableStateOf(DownloadedVideoDb.getActiveDownloadDir(context).absolutePath) }
     var longPressSpeed by remember { mutableFloatStateOf(sharedPrefs.getFloat("long_press_speed", 2.0f)) }
     var vibrationDuration by remember { mutableIntStateOf(sharedPrefs.getInt("vibration_duration", 50)) }
+    var doubleTapInterval by remember { mutableIntStateOf(sharedPrefs.getInt("double_tap_interval", 200)) }
+    var showDoubleTapDialog by remember { mutableStateOf(false) }
     var showSpeedCustomDialog by remember { mutableStateOf(false) }
     var customSpeedsList by remember { mutableStateOf(getCustomSpeeds(context)) }
 
@@ -445,6 +447,29 @@ fun SettingsPage(
                         ) {
                             val displayVibStr = if (vibrationDuration <= 0) "已关闭" else "${vibrationDuration} ms"
                             Text(displayVibStr, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // 3. 双击识别间隔
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showDoubleTapDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("双击识别间隔", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("${doubleTapInterval} ms", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = null,
@@ -753,6 +778,18 @@ fun SettingsPage(
                 vibrationDuration = newDuration
                 sharedPrefs.edit().putInt("vibration_duration", newDuration).apply()
                 showVibrationDialog = false
+            }
+        )
+    }
+
+    if (showDoubleTapDialog) {
+        DoubleTapIntervalDialog(
+            currentInterval = doubleTapInterval,
+            onDismiss = { showDoubleTapDialog = false },
+            onSave = { newInterval ->
+                doubleTapInterval = newInterval
+                sharedPrefs.edit().putInt("double_tap_interval", newInterval).apply()
+                showDoubleTapDialog = false
             }
         )
     }
@@ -1651,6 +1688,85 @@ fun VibrationDurationDialog(
                 OutlinedButton(
                     onClick = {
                         triggerVibration(context, sliderValue.roundToInt().toLong())
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("测试")
+                }
+                Button(
+                    onClick = { onSave(sliderValue.roundToInt()) },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("确认")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    )
+}
+
+// 双击识别间隔测试弹窗
+@Composable
+fun DoubleTapIntervalDialog(
+    currentInterval: Int,
+    onDismiss: () -> Unit,
+    onSave: (Int) -> Unit
+) {
+    var sliderValue by remember { mutableFloatStateOf(currentInterval.toFloat()) }
+    var testResultText by remember { mutableStateOf("") }
+    var lastClickTime by remember { mutableLongStateOf(0L) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("双击识别间隔", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "${sliderValue.roundToInt()} ms",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                if (testResultText.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = testResultText,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Slider(
+                    value = sliderValue,
+                    onValueChange = { sliderValue = it },
+                    valueRange = 50f..300f,
+                    steps = 249
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        val diff = now - lastClickTime
+                        if (lastClickTime > 0L && diff <= 500L) {
+                            testResultText = "测试双击间隔：${diff} ms"
+                            lastClickTime = 0L
+                        } else {
+                            testResultText = "已点击第一下，请在500ms内再次点击..."
+                            lastClickTime = now
+                        }
                     },
                     shape = RoundedCornerShape(12.dp)
                 ) {

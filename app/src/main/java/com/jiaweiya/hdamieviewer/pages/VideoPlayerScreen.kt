@@ -1371,6 +1371,9 @@ fun MpvMinimalPlayer(
     // 读取长按倍速与震动设置
     val longPressSpeed = remember { sharedPrefs.getFloat("long_press_speed", 2.0f) }
     val vibDuration = remember { sharedPrefs.getInt("vibration_duration", 50) }
+    val doubleTapTimeout = remember { sharedPrefs.getInt("double_tap_interval", 200).toLong() }
+    var lastTapUpTime by remember { mutableLongStateOf(0L) }
+    var singleTapJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var isSpeedingUp by remember { mutableStateOf(false) }
     val currentView = androidx.compose.ui.platform.LocalView.current
 
@@ -1638,7 +1641,7 @@ fun MpvMinimalPlayer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(longPressSpeed, vibDuration) {
+                .pointerInput(longPressSpeed, vibDuration, doubleTapTimeout) {
                     awaitPointerEventScope {
                         while (true) {
                             // requireUnconsumed = true：只捕获未被进度条/按钮消费的空白区域按下！
@@ -1672,14 +1675,34 @@ fun MpvMinimalPlayer(
                                 isSpeedingUp = false
                                 applySpeed(1.0f)
                             } else {
-                                // 普通单击处理：
-                                if (isSpeedMenuExpanded || isResolutionMenuExpanded) {
-                                    // 👈 核心修复：如果任意菜单处于展开状态，点击仅收起菜单，保持控制栏常驻！
-                                    isSpeedMenuExpanded = false
-                                    isResolutionMenuExpanded = false
+                                val now = System.currentTimeMillis()
+                                val timeSinceLastTap = now - lastTapUpTime
+
+                                if (timeSinceLastTap <= doubleTapTimeout) {
+                                    // 触发双击：取消等待中的单击显隐任务，切换播放/暂停
+                                    singleTapJob?.cancel()
+                                    singleTapJob = null
+                                    lastTapUpTime = 0L
+
+                                    if (exoPlayer.isPlaying) {
+                                        exoPlayer.pause()
+                                    } else {
+                                        exoPlayer.play()
+                                    }
+                                    isPlaying = exoPlayer.isPlaying
                                 } else {
-                                    // 菜单未展开时，正常开关控制栏
-                                    isControlsVisible = !isControlsVisible
+                                    // 记录本次抬起时间，启动延迟单击响应
+                                    lastTapUpTime = now
+                                    singleTapJob?.cancel()
+                                    singleTapJob = coroutineScope.launch {
+                                        kotlinx.coroutines.delay(doubleTapTimeout)
+                                        if (isSpeedMenuExpanded || isResolutionMenuExpanded) {
+                                            isSpeedMenuExpanded = false
+                                            isResolutionMenuExpanded = false
+                                        } else {
+                                            isControlsVisible = !isControlsVisible
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1846,16 +1869,19 @@ fun MpvMinimalPlayer(
                         )
                     }
                     Spacer(modifier = Modifier.width(5.dp))
-                    IconButton(
-                        onClick = onHomeClick,
-                        modifier = Modifier.size(topBtnSize)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Home,
-                            contentDescription = "主页",
-                            tint = Color.White,
-                            modifier = Modifier.size(topIconSize)
-                        )
+                    if (!isLandscape) {
+                        Spacer(modifier = Modifier.width(5.dp))
+                        IconButton(
+                            onClick = onHomeClick,
+                            modifier = Modifier.size(topBtnSize)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Home,
+                                contentDescription = "主页",
+                                tint = Color.White,
+                                modifier = Modifier.size(topIconSize)
+                            )
+                        }
                     }
 
                     // 将后续组件推到屏幕最右侧
