@@ -313,6 +313,41 @@ fun IwaraProfilePage(
                         }
                     )
 
+                    val currentHasMore = when (pagerState.currentPage) {
+                        1 -> hasMoreVideos
+                        2 -> hasMoreImages
+                        else -> hasMoreVideos || hasMoreImages
+                    }
+                    val isSearchingAndFetching = searchText.isNotBlank() && currentHasMore
+
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isSearchingAndFetching,
+                        enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
+                        exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .padding(vertical = 6.dp, horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "正在检索中...",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
                     SecondaryTabRow(
                         selectedTabIndex = pagerState.currentPage,
                         containerColor = MaterialTheme.colorScheme.surface
@@ -1403,6 +1438,14 @@ private fun AuthorMediaListTabContent(
                     onLoadMore()
                 }
             }
+    }
+
+    // 自动全量检索：当处于搜索状态且仍有未加载完的页面时，自动持续请求下一页直到全部完结
+    LaunchedEffect(searchKeyword, items.size, hasMore, isLoading) {
+        if (searchKeyword.isNotBlank() && hasMore && !isLoading) {
+            kotlinx.coroutines.delay(100)
+            onLoadMore()
+        }
     }
 
     if (isLoading && filteredItems.isEmpty()) {
