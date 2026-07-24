@@ -143,7 +143,9 @@ fun SettingsPage(
     onNavigateToAbout: () -> Unit,
     playerType: Int,
     onPlayerTypeChange: (Int) -> Unit,
-    onNavigateToFullscreenMarginSettings: () -> Unit, // 👈 新增此参数
+    onNavigateToFullscreenMarginSettings: () -> Unit,
+    onNavigateToFullscreenSwipeSettings: () -> Unit = {},
+    onNavigateToNonFullscreenSwipeSettings: () -> Unit = {},
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -156,6 +158,7 @@ fun SettingsPage(
     var vibrationDuration by remember { mutableIntStateOf(sharedPrefs.getInt("vibration_duration", 50)) }
     var doubleTapInterval by remember { mutableIntStateOf(sharedPrefs.getInt("double_tap_interval", 200)) }
     var showDoubleTapDialog by remember { mutableStateOf(false) }
+    var showSwipeSettingChoiceDialog by remember { mutableStateOf(false) }
     var showSpeedCustomDialog by remember { mutableStateOf(false) }
     var customSpeedsList by remember { mutableStateOf(getCustomSpeeds(context)) }
 
@@ -478,6 +481,20 @@ fun SettingsPage(
                         }
                     }
 
+                    // 4. 滑动进度调整比例
+                    SettingsRow(
+                        title = "滑动进度调整比例",
+                        subtitle = "配置全屏与非全屏下左右滑动手势快进/快退灵敏度",
+                        onClick = { showSwipeSettingChoiceDialog = true },
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
+
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                         modifier = Modifier.padding(horizontal = 16.dp)
@@ -790,6 +807,36 @@ fun SettingsPage(
                 doubleTapInterval = newInterval
                 sharedPrefs.edit().putInt("double_tap_interval", newInterval).apply()
                 showDoubleTapDialog = false
+            }
+        )
+    }
+
+    if (showSwipeSettingChoiceDialog) {
+        AlertDialog(
+            onDismissRequest = { showSwipeSettingChoiceDialog = false },
+            title = { Text("滑动进度调整比例配置", fontWeight = FontWeight.Bold) },
+            text = { Text("请选择要配置的手势控制模式：") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSwipeSettingChoiceDialog = false
+                        onNavigateToFullscreenSwipeSettings()
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("全屏设置")
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = {
+                        showSwipeSettingChoiceDialog = false
+                        onNavigateToNonFullscreenSwipeSettings()
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("非全屏设置")
+                }
             }
         )
     }

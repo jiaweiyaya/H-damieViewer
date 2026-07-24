@@ -51,6 +51,8 @@ import com.jiaweiya.hdamieviewer.pages.AboutPage
 import com.jiaweiya.hdamieviewer.pages.BackupCrypto
 import com.jiaweiya.hdamieviewer.pages.BackupData
 import com.jiaweiya.hdamieviewer.pages.FullscreenMarginSettingsPage
+import com.jiaweiya.hdamieviewer.pages.FullscreenSwipeSettingsScreen
+import com.jiaweiya.hdamieviewer.pages.NonFullscreenSwipeSettingsScreen
 import com.jiaweiya.hdamieviewer.pages.SearchResultsScreen
 import com.jiaweiya.hdamieviewer.pages.ExportBackupScreen
 import com.jiaweiya.hdamieviewer.pages.HomeScreen
@@ -384,6 +386,12 @@ class MainActivity : ComponentActivity() {
                                     onPlayerTypeChange = { playerType = it },
                                     onNavigateToFullscreenMarginSettings = {
                                         navController.navigate("FullscreenMarginSettings")
+                                    },
+                                    onNavigateToFullscreenSwipeSettings = {
+                                        navController.navigate("FullscreenSwipeSettings")
+                                    },
+                                    onNavigateToNonFullscreenSwipeSettings = {
+                                        navController.navigate("NonFullscreenSwipeSettings")
                                     }
                                 )
                             }
@@ -432,13 +440,35 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // 全屏屏幕边距调整页面路由
+// 全屏屏幕边距调整页面路由
                             composable(
                                 route = "FullscreenMarginSettings",
                                 enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
                                 popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
                             ) {
                                 FullscreenMarginSettingsPage(
+                                    onBackClick = { navController.popBackStack() }
+                                )
+                            }
+
+                            // 全屏滑动进度设置页面路由
+                            composable(
+                                route = "FullscreenSwipeSettings",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                FullscreenSwipeSettingsScreen(
+                                    onBackClick = { navController.popBackStack() }
+                                )
+                            }
+
+                            // 非全屏滑动进度设置页面路由
+                            composable(
+                                route = "NonFullscreenSwipeSettings",
+                                enterTransition = { slideIntoContainer(towards = AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(400)) },
+                                popExitTransition = { slideOutOfContainer(towards = AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(400)) }
+                            ) {
+                                NonFullscreenSwipeSettingsScreen(
                                     onBackClick = { navController.popBackStack() }
                                 )
                             }

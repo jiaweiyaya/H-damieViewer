@@ -1375,6 +1375,29 @@ fun MpvMinimalPlayer(
     var lastTapUpTime by remember { mutableLongStateOf(0L) }
     var singleTapJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var isSpeedingUp by remember { mutableStateOf(false) }
+
+    // 滑动进度相关状态
+    val swipeEnabled = remember(isLandscape) {
+        if (isLandscape) sharedPrefs.getBoolean("fs_swipe_enabled", true)
+        else sharedPrefs.getBoolean("non_fs_swipe_enabled", true)
+    }
+    val swipeProportional = remember(isLandscape) {
+        if (isLandscape) sharedPrefs.getBoolean("fs_swipe_proportional", false)
+        else sharedPrefs.getBoolean("non_fs_swipe_proportional", false)
+    }
+    val swipeSpeedRatio = remember(isLandscape, swipeProportional) {
+        if (isLandscape) {
+            if (swipeProportional) sharedPrefs.getFloat("fs_swipe_speed_prop", 0.1f)
+            else sharedPrefs.getFloat("fs_swipe_speed_abs", 1.0f)
+        } else {
+            if (swipeProportional) sharedPrefs.getFloat("non_fs_swipe_speed_prop", 0.05f)
+            else sharedPrefs.getFloat("non_fs_swipe_speed_abs", 1.0f)
+        }
+    }
+
+    var isDraggingProgress by remember { mutableStateOf(false) }
+    var dragTargetPosition by remember { mutableLongStateOf(0L) }
+    var dragDeltaMs by remember { mutableLongStateOf(0L) }
     val currentView = androidx.compose.ui.platform.LocalView.current
 
     // 自定义倍速菜单
@@ -1641,17 +1664,19 @@ fun MpvMinimalPlayer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(longPressSpeed, vibDuration, doubleTapTimeout) {
+                .pointerInput(longPressSpeed, vibDuration, doubleTapTimeout, swipeEnabled, swipeProportional, swipeSpeedRatio, duration) {
                     awaitPointerEventScope {
                         while (true) {
-                            // requireUnconsumed = true：只捕获未被进度条/按钮消费的空白区域按下！
                             val down = awaitFirstDown(requireUnconsumed = true)
                             var isLongPressTriggered = false
+                            var isHorizontalDragHandled = false
+                            var accumulatedDx = 0f
+                            val initialPos = exoPlayer.currentPosition
 
-                            // 250ms 定时器
+                            // 250ms 定时器用于检测长按
                             val longPressJob = coroutineScope.launch {
                                 kotlinx.coroutines.delay(250)
-                                if (longPressSpeed > 1.0f) {
+                                if (longPressSpeed > 1.0f && !isHorizontalDragHandled) {
                                     isLongPressTriggered = true
                                     isSpeedingUp = true
                                     triggerVibration(context, vibDuration.toLong())
@@ -1659,19 +1684,47 @@ fun MpvMinimalPlayer(
                                 }
                             }
 
-                            // 毫秒级检测手指抬起
                             while (true) {
                                 val event = awaitPointerEvent()
-                                val isUp = event.changes.any { it.changedToUp() }
-                                if (isUp || event.changes.isEmpty()) {
-                                    break
+                                val change = event.changes.firstOrNull() ?: break
+                                val isUp = change.changedToUp()
+
+                                if (!isUp && swipeEnabled && !isLongPressTriggered && duration > 0) {
+                                    val dx = change.position.x - down.position.x
+                                    val dy = change.position.y - down.position.y
+
+                                    // 水平滑动距离超过阈值判定为滑动快进/快退手势
+                                    if (kotlin.math.abs(dx) > 18f && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                                        if (!isHorizontalDragHandled) {
+                                            isHorizontalDragHandled = true
+                                            longPressJob.cancel()
+                                            singleTapJob?.cancel()
+                                            isDraggingProgress = true
+                                        }
+                                        accumulatedDx = dx
+                                        val units10px = accumulatedDx / 10.0f
+                                        val calcDeltaMs = if (swipeProportional) {
+                                            (units10px * (swipeSpeedRatio / 100.0f) * duration).toLong()
+                                        } else {
+                                            (units10px * swipeSpeedRatio * 1000.0f).toLong()
+                                        }
+                                        dragDeltaMs = calcDeltaMs
+                                        dragTargetPosition = (initialPos + calcDeltaMs).coerceIn(0L, duration)
+                                        change.consume()
+                                    }
                                 }
+
+                                if (isUp) break
                             }
 
                             longPressJob.cancel()
 
-                            if (isLongPressTriggered) {
-                                // 抬起手指：恢复 1.0x 倍速
+                            if (isHorizontalDragHandled) {
+                                // 手指抬起：应用 Seek 调整视频进度
+                                isDraggingProgress = false
+                                exoPlayer.seekTo(dragTargetPosition)
+                                currentPosition = dragTargetPosition
+                            } else if (isLongPressTriggered) {
                                 isSpeedingUp = false
                                 applySpeed(1.0f)
                             } else {
@@ -1679,19 +1732,13 @@ fun MpvMinimalPlayer(
                                 val timeSinceLastTap = now - lastTapUpTime
 
                                 if (timeSinceLastTap <= doubleTapTimeout) {
-                                    // 触发双击：取消等待中的单击显隐任务，切换播放/暂停
                                     singleTapJob?.cancel()
                                     singleTapJob = null
                                     lastTapUpTime = 0L
 
-                                    if (exoPlayer.isPlaying) {
-                                        exoPlayer.pause()
-                                    } else {
-                                        exoPlayer.play()
-                                    }
+                                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                     isPlaying = exoPlayer.isPlaying
                                 } else {
-                                    // 记录本次抬起时间，启动延迟单击响应
                                     lastTapUpTime = now
                                     singleTapJob?.cancel()
                                     singleTapJob = coroutineScope.launch {
@@ -1745,6 +1792,36 @@ fun MpvMinimalPlayer(
                         color = Color.White,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        // 滑动快进/快退 HUD 提示框
+        if (isDraggingProgress) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val deltaSec = dragDeltaMs / 1000L
+                    val prefix = if (deltaSec >= 0) "+" else ""
+                    Text(
+                        text = "$prefix${deltaSec}s",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${formatTime(dragTargetPosition)} / ${formatTime(duration)}",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
